@@ -9,7 +9,7 @@ from typing import Any
 import yaml
 
 DEFAULT_CONFIG_PATH = Path("~/.aborg/config.yaml").expanduser()
-DEFAULT_DESTINATION = r"N:\media\audiobooks"
+DEFAULT_DESTINATION = "/mnt/n/media/audiobooks"
 
 ARCHIVE_EXTS = frozenset({".zip", ".rar", ".7z"})
 AUDIO_EXTS = frozenset({".m4b", ".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wma", ".aac"})

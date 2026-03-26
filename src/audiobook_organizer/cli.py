@@ -65,27 +65,27 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...]) -> None:
         console.print("[yellow]No audiobook files found.[/yellow]")
         return
 
-    table = Table(title=f"Found {len(items)} audiobook(s)")
-    table.add_column("Type", style="cyan", width=10)
-    table.add_column("Author", style="green")
-    table.add_column("Title", style="bold")
-    table.add_column("Series")
-    table.add_column("Size", justify="right")
-    table.add_column("Source path", style="dim", max_width=50)
-    table.add_column("Destination", style="blue", max_width=50)
+    table = Table(title=f"Found {len(items)} audiobook(s)", show_lines=True)
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Author", style="green", no_wrap=True)
+    table.add_column("Title", style="bold", no_wrap=True)
+    table.add_column("Series", no_wrap=True)
+    table.add_column("Size", justify="right", no_wrap=True)
+    table.add_column("Dest path", style="blue")
 
-    for item in items:
+    for i, item in enumerate(items, 1):
         table.add_row(
-            item.kind,
+            str(i),
             item.meta.author,
             item.meta.title,
             f"{item.meta.series} #{item.meta.sequence}" if item.meta.series else "",
             _human_size(item.size),
-            str(item.path),
-            str(cfg.destination / item.meta.dest_relative()),
+            str(item.meta.dest_relative()),
         )
 
     console.print(table)
+    console.print(f"\n[dim]Source: {', '.join(str(d) for d in cfg.source_dirs)}[/dim]")
+    console.print(f"[dim]Destination root: {cfg.destination}[/dim]")
 
 
 # ── organize ─────────────────────────────────────────────────────────────
@@ -128,14 +128,15 @@ def org(
     prefix = "DRY RUN — " if dry_run else ""
     console.print(f"\n[bold]{prefix}Organizing {len(items)} item(s) → {cfg.destination}[/bold]\n")
 
-    table = Table()
-    table.add_column("Source", style="dim")
-    table.add_column("→")
+    table = Table(show_lines=True)
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Source file", style="dim")
+    table.add_column("→", width=1)
     table.add_column("Destination", style="green")
 
-    for item in items:
+    for i, item in enumerate(items, 1):
         rel_dest = item.meta.dest_relative()
-        table.add_row(str(item.path), "→", str(cfg.destination / rel_dest))
+        table.add_row(str(i), item.path.name, "→", str(rel_dest))
 
     console.print(table)
 

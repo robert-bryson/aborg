@@ -109,6 +109,27 @@ class TestScanSources:
         results = scan_sources(cfg)
         assert len(results) == 2
 
+    def test_deduplicates_windows_copy_suffix(self, tmp_path):
+        """Files like 'Author - Title(1).zip' should be deduped against 'Author - Title.zip'."""
+        src = tmp_path / "downloads"
+        _make_audiobook_zip(src / "Author - Title.zip")
+        _make_audiobook_zip(src / "Author - Title(1).zip")
+
+        cfg = Config(source_dirs=[src], min_file_size=100)
+        results = scan_sources(cfg)
+        assert len(results) == 1
+        assert results[0].meta.title == "Title"
+
+    def test_skips_unknown_author_dir(self, tmp_path):
+        """Directories with no recognisable author should be skipped."""
+        src = tmp_path / "downloads"
+        book_dir = src / "French I"
+        _make_audio_file(book_dir / "lesson01.mp3")
+
+        cfg = Config(source_dirs=[src], min_file_size=100)
+        results = scan_sources(cfg)
+        assert len(results) == 0
+
 
 class TestScanCollection:
     def test_scans_author_title_structure(self, tmp_path):

@@ -5,7 +5,8 @@ source_dirs:
   # - /path/to/other/dir
 
 # Destination root directory (Audiobookshelf-compatible)
-destination: "N:\\media\\audiobooks"
+# WSL path — adjust to match your NAS mount point
+destination: "/mnt/n/media/audiobooks"
 
 # File extensions to treat as audiobook archives
 archive_extensions:

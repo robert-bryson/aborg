@@ -12,6 +12,8 @@ if TYPE_CHECKING:
 
     ProgressCallback = Callable[[str], None]
 
+import re
+
 from .config import Config
 from .parser import AudiobookMeta, merge_meta, parse_audio_tags, parse_filename
 
@@ -32,6 +34,9 @@ _JUNK_PREFIXES = (
     "routes",
 )
 
+# Regex to strip Windows download-duplicate suffixes like "(1)", " (2)" etc.
+_DUP_SUFFIX_RE = re.compile(r"\s*\(\d+\)$")
+
 
 @dataclass
 class ScanResult:
@@ -51,6 +56,7 @@ def scan_sources(
     """Walk all configured source directories and return discovered audiobooks."""
     results: list[ScanResult] = []
     seen: set[Path] = set()
+    seen_titles: set[str] = set()  # deduplicate Windows "(1)" copies
     _log = on_progress or (lambda _msg: None)
 
     for src_dir in cfg.source_dirs:
@@ -69,6 +75,11 @@ def scan_sources(
             if entry.is_file():
                 result = _check_file(entry, cfg)
                 if result:
+                    dedup_key = f"{result.meta.author}::{result.meta.title}".lower()
+                    if dedup_key in seen_titles:
+                        _log(f"  [yellow]skip duplicate[/yellow] {entry.name}")
+                        continue
+                    seen_titles.add(dedup_key)
                     _log(f"  [green]✓[/green] {result.meta.author} — {result.meta.title}")
                     results.append(result)
             elif entry.is_dir():
@@ -111,7 +122,9 @@ def _check_file(path: Path, cfg: Config) -> ScanResult | None:
         if ext == ".zip" and not _zip_contains_audio(path, cfg.audio_extensions):
             return None
         # Must look like "Author - Title" (pattern match with a real author)
-        meta = parse_filename(path.stem, cfg.filename_patterns)
+        # Strip Windows download-duplicate suffix before parsing
+        clean_stem = _DUP_SUFFIX_RE.sub("", path.stem)
+        meta = parse_filename(clean_stem, cfg.filename_patterns)
         if meta.author == "Unknown Author":
             return None
         meta.source_path = path
@@ -146,6 +159,9 @@ def _check_dir(path: Path, cfg: Config) -> ScanResult | None:
     dir_meta = parse_filename(path.name, cfg.filename_patterns)
     first_audio_meta = parse_audio_tags(audio_files[0]) if audio_files else AudiobookMeta()
     meta = merge_meta(first_audio_meta, dir_meta)
+    # Skip directories where we can't identify an author (likely not an audiobook)
+    if meta.author == "Unknown Author":
+        return None
     meta.source_path = path
 
     return ScanResult(path=path, kind="audio_dir", meta=meta, size=total_size)
