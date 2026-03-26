@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aborg"
+version = "0.1.0"
+description = "Scan, organize, and manage audiobook file collections"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.1",
+    "pyyaml>=6.0",
+    "mutagen>=1.47",
+    "rich>=13.0",
+]
+
+[project.scripts]
+aborg = "audiobook_organizer.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/audiobook_organizer"]
+
+# ── Development dependencies ─────────────────────────────────────────────
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=6.0",
+    "ruff>=0.9",
+]
+
+# ── Ruff ─────────────────────────────────────────────────────────────────
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "RUF",   # ruff-specific rules
+    "S",     # flake8-bandit (security)
+    "T20",   # flake8-print
+    "PTH",   # flake8-use-pathlib
+]
+ignore = [
+    "S603",  # subprocess-without-shell-check (not relevant)
+    "S607",  # start-process-with-partial-path (not relevant)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # allow assert in tests
+
+[tool.ruff.lint.isort]
+known-first-party = ["audiobook_organizer"]
+
+# ── Pytest ───────────────────────────────────────────────────────────────
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --tb=short -q"
+
+# ── Coverage ─────────────────────────────────────────────────────────────
+
+[tool.coverage.run]
+source = ["audiobook_organizer"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+fail_under = 70

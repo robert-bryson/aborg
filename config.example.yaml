@@ -1,0 +1,71 @@
+# Directories to scan for new audiobook files
+source_dirs:
+  - ~/Downloads
+  # - /path/to/other/dir
+
+# Destination root directory (Audiobookshelf-compatible)
+destination: "N:\\media\\audiobooks"
+
+# File extensions to treat as audiobook archives
+archive_extensions:
+  - .zip
+  - .rar
+  - .7z
+
+# File extensions to treat as audiobook audio
+audio_extensions:
+  - .m4b
+  - .mp3
+  - .m4a
+  - .ogg
+  - .opus
+  - .flac
+  - .wma
+  - .aac
+
+# File extensions to treat as ebook/companion files
+companion_extensions:
+  - .jpg
+  - .jpeg
+  - .png
+  - .pdf
+  - .epub
+  - .nfo
+  - .cue
+  - .txt
+  - .opf
+
+# Auto-extract zip/archive files at destination
+auto_extract: true
+
+# Delete archive after successful extraction
+delete_after_extract: false
+
+# Directory structure template (Audiobookshelf convention)
+# Placeholders: {author}, {series}, {sequence}, {title}, {year}, {narrator}
+structure_template: "{author}/{series}/{title}"
+structure_template_no_series: "{author}/{title}"
+
+# Title folder format (Audiobookshelf-compatible)
+# Placeholders: {year}, {sequence}, {title}, {narrator}
+title_format: "{year} - {title} {{{narrator}}}"
+title_format_no_narrator: "{year} - {title}"
+title_format_no_year: "{title}"
+
+# Filename patterns to parse (tried in order, first match wins)
+# Groups: author, title, series, sequence, year, narrator
+filename_patterns:
+  # Author - Series Book 1 - Title (Year) [Narrator]
+  - '(?P<author>.+?) - (?P<series>.+?)\s*(?:Book|Vol\.?|Volume)\s*(?P<sequence>\d+)\s*-\s*(?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*\[(?P<narrator>.+?)\])?$'
+  # Author - Title (Year) [Narrator]
+  - '(?P<author>.+?) - (?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*\[(?P<narrator>.+?)\])?$'
+  # Title - Author (Year)
+  - '(?P<title>.+?) - (?P<author>.+?)(?:\s*\((?P<year>\d{4})\))?$'
+  # Author_Title
+  - '(?P<author>[^_]+)_(?P<title>.+)$'
+
+# Minimum file size to consider (bytes) — skip tiny files
+min_file_size: 1048576  # 1 MB
+
+# Move log file (for undo support)
+move_log: "~/.aborg/moves.log"

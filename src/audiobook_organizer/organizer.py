@@ -1,0 +1,158 @@
+"""Move / copy / extract audiobook files into an organized hierarchy."""
+
+from __future__ import annotations
+
+import shutil
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .config import Config
+from .scanner import ScanResult
+
+
+def organize(
+    items: list[ScanResult],
+    cfg: Config,
+    *,
+    dry_run: bool = False,
+    copy: bool = False,
+) -> list[tuple[Path, Path]]:
+    """Organize a list of scan results into the destination directory.
+
+    Returns a list of ``(source, destination)`` tuples for each action taken.
+    """
+    actions: list[tuple[Path, Path]] = []
+
+    for item in items:
+        dest_rel = item.meta.dest_relative()
+        dest_dir = cfg.destination / dest_rel
+
+        if item.kind == "archive" and cfg.auto_extract:
+            dest = _handle_archive(item, dest_dir, cfg, dry_run=dry_run)
+        elif item.kind == "audio_dir":
+            dest = _handle_directory(item, dest_dir, dry_run=dry_run, copy=copy)
+        else:
+            dest = _handle_single_file(item, dest_dir, dry_run=dry_run, copy=copy)
+
+        if dest:
+            actions.append((item.path, dest))
+
+    if not dry_run and actions:
+        _log_actions(actions, cfg.move_log)
+
+    return actions
+
+
+def _handle_archive(item: ScanResult, dest_dir: Path, cfg: Config, *, dry_run: bool) -> Path | None:
+    """Extract a zip archive to the destination, or just move if extraction is off."""
+    if item.path.suffix.lower() != ".zip":
+        # For .rar / .7z we just move the file — extraction would need p7zip / unrar
+        return _handle_single_file(item, dest_dir, dry_run=dry_run, copy=False)
+
+    if dry_run:
+        return dest_dir
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with zipfile.ZipFile(item.path) as zf:
+            # Security: validate all member paths to prevent zip-slip
+            for member in zf.namelist():
+                member_path = (dest_dir / member).resolve()
+                if not str(member_path).startswith(str(dest_dir.resolve())):
+                    raise ValueError(f"Unsafe zip member path: {member}")
+            zf.extractall(dest_dir)
+    except (zipfile.BadZipFile, ValueError):
+        # Fall back to just moving the archive
+        return _move_or_copy(item.path, dest_dir / item.path.name, copy=False, dry_run=False)
+
+    if cfg.delete_after_extract:
+        item.path.unlink()
+
+    return dest_dir
+
+
+def _handle_directory(
+    item: ScanResult, dest_dir: Path, *, dry_run: bool, copy: bool
+) -> Path | None:
+    if dry_run:
+        return dest_dir
+    dest_dir.parent.mkdir(parents=True, exist_ok=True)
+    if copy:
+        shutil.copytree(item.path, dest_dir, dirs_exist_ok=True)
+    else:
+        if dest_dir.exists():
+            # Merge into existing
+            shutil.copytree(item.path, dest_dir, dirs_exist_ok=True)
+            shutil.rmtree(item.path)
+        else:
+            shutil.move(str(item.path), str(dest_dir))
+    return dest_dir
+
+
+def _handle_single_file(
+    item: ScanResult, dest_dir: Path, *, dry_run: bool, copy: bool
+) -> Path | None:
+    dest_file = dest_dir / item.path.name
+    return _move_or_copy(item.path, dest_file, copy=copy, dry_run=dry_run)
+
+
+def _move_or_copy(src: Path, dest: Path, *, copy: bool, dry_run: bool) -> Path | None:
+    if dry_run:
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        # Avoid clobbering — add a suffix
+        stem = dest.stem
+        suffix = dest.suffix
+        dest = dest.with_name(f"{stem}_{datetime.now(timezone.utc):%Y%m%d%H%M%S}{suffix}")
+    if copy:
+        shutil.copy2(str(src), str(dest))
+    else:
+        shutil.move(str(src), str(dest))
+    return dest
+
+
+def _log_actions(actions: list[tuple[Path, Path]], log_path: Path) -> None:
+    """Append move/copy actions to the log for undo support."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).isoformat()
+    with log_path.open("a") as f:
+        for src, dest in actions:
+            f.write(f"{ts}\t{src}\t{dest}\n")
+
+
+def undo_last(cfg: Config, *, dry_run: bool = False) -> list[tuple[Path, Path]]:
+    """Undo the most recent batch of moves from the log.
+
+    Returns list of ``(current_location, restored_location)`` tuples.
+    """
+    if not cfg.move_log.exists():
+        return []
+
+    lines = cfg.move_log.read_text().strip().splitlines()
+    if not lines:
+        return []
+
+    # Find the last batch (all lines sharing the same timestamp)
+    last_ts = lines[-1].split("\t")[0]
+    batch = [line for line in lines if line.startswith(last_ts)]
+    remaining = [line for line in lines if not line.startswith(last_ts)]
+
+    undone: list[tuple[Path, Path]] = []
+    for line in batch:
+        _, src_str, dest_str = line.split("\t")
+        src, dest = Path(src_str), Path(dest_str)
+        if not dry_run and dest.exists():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.is_dir():
+                shutil.move(str(dest), str(src))
+            else:
+                shutil.move(str(dest), str(src))
+        undone.append((dest, src))
+
+    if not dry_run:
+        cfg.move_log.write_text("\n".join(remaining) + ("\n" if remaining else ""))
+
+    return undone
