@@ -59,29 +59,53 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool) -> None:
     console.print(f"[dim]Destination: {cfg.destination}[/dim]\n")
 
     count = 0
+    new_count = 0
+    exist_count = 0
 
-    def _on_hit(result: object) -> None:
-        nonlocal count
-        count += 1
-        series = ""
-        if result.meta.series:
-            seq = result.meta.sequence or "?"
-            series = f"  [dim]({result.meta.series} #{seq})[/dim]"
-        console.print(
-            f"  [green]{count:>3}.[/green]"
-            f" [bold]{result.meta.author}[/bold] —"
-            f" {result.meta.title}{series}"
-            f"  [dim]{_human_size(result.size)}[/dim]"
-            f"  [blue]→ {result.meta.dest_relative()}[/blue]"
+    with console.status("[bold green]Scanning…[/bold green]", spinner="dots") as status:
+
+        def _on_progress(msg: str) -> None:
+            status.update(f"[bold green]Scanning:[/bold green] {msg}")
+
+        def _on_hit(result: object) -> None:
+            nonlocal count, new_count, exist_count
+            count += 1
+            dest_full = cfg.destination / result.meta.dest_relative()
+            exists = dest_full.exists()
+            if exists:
+                exist_count += 1
+                tag = "[yellow] EXISTS [/yellow]"
+            else:
+                new_count += 1
+                tag = "[green]    NEW [/green]"
+            series = ""
+            if result.meta.series:
+                seq = result.meta.sequence or "?"
+                series = f"  [dim]({result.meta.series} #{seq})[/dim]"
+            console.print(
+                f"{tag} [dim]{count:>3}.[/dim]"
+                f" [bold]{result.meta.author}[/bold] —"
+                f" {result.meta.title}{series}"
+                f"  [dim]{_human_size(result.size)}[/dim]"
+                f"  [blue]→ {result.meta.dest_relative()}[/blue]"
+            )
+
+        items = scan_sources(
+            cfg,
+            on_progress=_on_progress,
+            on_hit=_on_hit,
         )
-
-    items = scan_sources(cfg, on_hit=_on_hit)
 
     if not items:
         console.print("[yellow]No audiobook files found.[/yellow]")
         return
 
-    console.print(f"\n[bold green]Found {len(items)} audiobook(s).[/bold green]")
+    parts = [f"Found [bold]{len(items)}[/bold] audiobook(s)"]
+    if new_count:
+        parts.append(f"[green]{new_count} new[/green]")
+    if exist_count:
+        parts.append(f"[yellow]{exist_count} already in collection[/yellow]")
+    console.print("\n" + ", ".join(parts) + ".")
 
     if table:
         tbl = Table(show_lines=True)
