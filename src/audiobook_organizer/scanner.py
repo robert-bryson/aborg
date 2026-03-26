@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     ProgressCallback = Callable[[str], None]
+    HitCallback = Callable[["ScanResult"], None]
 
 import re
 
@@ -52,12 +53,14 @@ def scan_sources(
     cfg: Config,
     *,
     on_progress: ProgressCallback | None = None,
+    on_hit: HitCallback | None = None,
 ) -> list[ScanResult]:
     """Walk all configured source directories and return discovered audiobooks."""
     results: list[ScanResult] = []
     seen: set[Path] = set()
     seen_titles: set[str] = set()  # deduplicate Windows "(1)" copies
     _log = on_progress or (lambda _msg: None)
+    _hit = on_hit or (lambda _r: None)
 
     for src_dir in cfg.source_dirs:
         if not src_dir.exists():
@@ -82,11 +85,13 @@ def scan_sources(
                     seen_titles.add(dedup_key)
                     _log(f"  [green]✓[/green] {result.meta.author} — {result.meta.title}")
                     results.append(result)
+                    _hit(result)
             elif entry.is_dir():
                 result = _check_dir(entry, cfg)
                 if result:
                     _log(f"  [green]✓[/green] {result.meta.author} — {result.meta.title}")
                     results.append(result)
+                    _hit(result)
 
     return results
 

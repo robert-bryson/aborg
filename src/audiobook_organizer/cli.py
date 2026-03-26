@@ -47,45 +47,62 @@ def cli(ctx: click.Context, config_path: str | None) -> None:
 
 @cli.command()
 @click.option("-d", "--dir", "extra_dirs", multiple=True, help="Additional directories to scan.")
+@click.option("--table", is_flag=True, help="Show results in a table instead of streaming.")
 @click.pass_context
-def scan(ctx: click.Context, extra_dirs: tuple[str, ...]) -> None:
+def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool) -> None:
     """Scan source directories and show discovered audiobook files."""
     cfg: Config = ctx.obj["cfg"]
     for d in extra_dirs:
         cfg.source_dirs.append(Path(d).expanduser())
 
-    with console.status("[bold green]Scanning…[/bold green]", spinner="dots") as status:
+    console.print(f"[dim]Scanning: {', '.join(str(d) for d in cfg.source_dirs)}[/dim]")
+    console.print(f"[dim]Destination: {cfg.destination}[/dim]\n")
 
-        def _progress(msg: str) -> None:
-            status.update(f"[bold green]Scanning:[/bold green] {msg}")
+    count = 0
 
-        items = scan_sources(cfg, on_progress=_progress)
+    def _on_hit(result: object) -> None:
+        nonlocal count
+        count += 1
+        series = ""
+        if result.meta.series:
+            seq = result.meta.sequence or "?"
+            series = f"  [dim]({result.meta.series} #{seq})[/dim]"
+        console.print(
+            f"  [green]{count:>3}.[/green]"
+            f" [bold]{result.meta.author}[/bold] —"
+            f" {result.meta.title}{series}"
+            f"  [dim]{_human_size(result.size)}[/dim]"
+            f"  [blue]→ {result.meta.dest_relative()}[/blue]"
+        )
+
+    items = scan_sources(cfg, on_hit=_on_hit)
 
     if not items:
         console.print("[yellow]No audiobook files found.[/yellow]")
         return
 
-    table = Table(title=f"Found {len(items)} audiobook(s)", show_lines=True)
-    table.add_column("#", style="dim", width=3)
-    table.add_column("Author", style="green", no_wrap=True)
-    table.add_column("Title", style="bold", no_wrap=True)
-    table.add_column("Series", no_wrap=True)
-    table.add_column("Size", justify="right", no_wrap=True)
-    table.add_column("Dest path", style="blue")
+    console.print(f"\n[bold green]Found {len(items)} audiobook(s).[/bold green]")
 
-    for i, item in enumerate(items, 1):
-        table.add_row(
-            str(i),
-            item.meta.author,
-            item.meta.title,
-            f"{item.meta.series} #{item.meta.sequence}" if item.meta.series else "",
-            _human_size(item.size),
-            str(item.meta.dest_relative()),
-        )
+    if table:
+        tbl = Table(show_lines=True)
+        tbl.add_column("#", style="dim", width=3)
+        tbl.add_column("Author", style="green", no_wrap=True)
+        tbl.add_column("Title", style="bold", no_wrap=True)
+        tbl.add_column("Series", no_wrap=True)
+        tbl.add_column("Size", justify="right", no_wrap=True)
+        tbl.add_column("Dest path", style="blue")
 
-    console.print(table)
-    console.print(f"\n[dim]Source: {', '.join(str(d) for d in cfg.source_dirs)}[/dim]")
-    console.print(f"[dim]Destination root: {cfg.destination}[/dim]")
+        for i, item in enumerate(items, 1):
+            tbl.add_row(
+                str(i),
+                item.meta.author,
+                item.meta.title,
+                f"{item.meta.series} #{item.meta.sequence}" if item.meta.series else "",
+                _human_size(item.size),
+                str(item.meta.dest_relative()),
+            )
+
+        console.print(tbl)
 
 
 # ── organize ─────────────────────────────────────────────────────────────
