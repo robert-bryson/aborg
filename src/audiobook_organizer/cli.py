@@ -154,40 +154,82 @@ def org(
     if dest:
         cfg.destination = Path(dest)
 
+    console.print(f"[dim]Scanning: {', '.join(str(d) for d in cfg.source_dirs)}[/dim]")
+    console.print(f"[dim]Destination: {cfg.destination}[/dim]\n")
+
+    count = 0
+    new_count = 0
+    exist_count = 0
+
     with console.status("[bold green]Scanning…[/bold green]", spinner="dots") as status:
 
         def _org_progress(msg: str) -> None:
             status.update(f"[bold green]Scanning:[/bold green] {msg}")
 
-        items = scan_sources(cfg, on_progress=_org_progress)
+        def _org_hit(result: object) -> None:
+            nonlocal count, new_count, exist_count
+            count += 1
+            dest_full = cfg.destination / result.meta.dest_relative()
+            exists = dest_full.exists()
+            if exists:
+                exist_count += 1
+                tag = "[yellow] EXISTS [/yellow]"
+            else:
+                new_count += 1
+                tag = "[green]    NEW [/green]"
+            series = ""
+            if result.meta.series:
+                seq = result.meta.sequence or "?"
+                series = f"  [dim]({result.meta.series} #{seq})[/dim]"
+            console.print(
+                f"{tag} [dim]{count:>3}.[/dim]"
+                f" [bold]{result.meta.author}[/bold] —"
+                f" {result.meta.title}{series}"
+                f"  [dim]{_human_size(result.size)}[/dim]"
+                f"  [blue]→ {result.meta.dest_relative()}[/blue]"
+            )
+
+        items = scan_sources(
+            cfg,
+            on_progress=_org_progress,
+            on_hit=_org_hit,
+        )
 
     if not items:
         console.print("[yellow]No audiobook files found.[/yellow]")
         return
 
-    # Preview
+    parts = [f"Found [bold]{len(items)}[/bold] audiobook(s)"]
+    if new_count:
+        parts.append(f"[green]{new_count} new[/green]")
+    if exist_count:
+        parts.append(f"[yellow]{exist_count} already in collection[/yellow]")
+    console.print("\n" + ", ".join(parts) + ".")
+
     prefix = "DRY RUN — " if dry_run else ""
-    console.print(f"\n[bold]{prefix}Organizing {len(items)} item(s) → {cfg.destination}[/bold]\n")
-
-    table = Table(show_lines=True)
-    table.add_column("#", style="dim", width=3)
-    table.add_column("Source file", style="dim")
-    table.add_column("→", width=1)
-    table.add_column("Destination", style="green")
-
-    for i, item in enumerate(items, 1):
-        rel_dest = item.meta.dest_relative()
-        table.add_row(str(i), item.path.name, "→", str(rel_dest))
-
-    console.print(table)
-
-    if not dry_run and not yes and not click.confirm("\nProceed?"):
+    prompt = f"\n{prefix}Organize {new_count} new item(s)?"
+    if not dry_run and not yes and not click.confirm(prompt):
         console.print("[yellow]Aborted.[/yellow]")
         return
 
-    actions = organize(items, cfg, dry_run=dry_run, copy=copy)
-    verb = "Would move" if dry_run else ("Copied" if copy else "Moved")
-    console.print(f"\n[green]{verb} {len(actions)} item(s).[/green]")
+    console.print()
+    verb = "Would move" if dry_run else ("Copying" if copy else "Moving")
+    done = 0
+    with console.status(f"[bold green]{verb}…[/bold green]", spinner="dots") as status:
+        for i, item in enumerate(items, 1):
+            dest_full = cfg.destination / item.meta.dest_relative()
+            if dest_full.exists():
+                continue
+            status.update(f"[bold green]{verb}:[/bold green] {item.meta.title}")
+            result = organize([item], cfg, dry_run=dry_run, copy=copy)
+            if result:
+                done += len(result)
+                console.print(
+                    f"  [green]✓[/green] [dim]{i}.[/dim] {item.meta.author} — {item.meta.title}"
+                )
+
+    verb_past = "Would move" if dry_run else ("Copied" if copy else "Moved")
+    console.print(f"\n[green]{verb_past} {done} item(s).[/green]")
 
 
 # ── analyze ──────────────────────────────────────────────────────────────
@@ -210,9 +252,13 @@ def analyze(ctx: click.Context, path: str | None) -> None:
         console.print(f"[red]Directory not found: {root}[/red]")
         return
 
-    console.print(f"[bold]Analyzing collection at {root} …[/bold]\n")
-    report = analyze_collection(root, cfg)
+    with console.status(
+        f"[bold green]Analyzing {root} …[/bold green]",
+        spinner="dots",
+    ):
+        report = analyze_collection(root, cfg)
 
+    console.print()
     # Summary
     summary = Table(title="Collection Summary", show_header=False)
     summary.add_column("Metric", style="bold")
@@ -297,15 +343,16 @@ def undo(ctx: click.Context, dry_run: bool) -> None:
         console.print("[yellow]Nothing to undo.[/yellow]")
         return
 
-    table = Table(title=f"{'Would undo' if dry_run else 'Undone'}: {len(actions)} action(s)")
-    table.add_column("From")
-    table.add_column("→")
-    table.add_column("Restored to", style="green")
+    verb = "Would restore" if dry_run else "Restored"
+    console.print(f"\n[bold]{verb} {len(actions)} item(s):[/bold]\n")
+    for i, (src, dest) in enumerate(actions, 1):
+        console.print(
+            f"  [green]↩[/green] [dim]{i:>3}.[/dim]"
+            f" [dim]{src.name}[/dim]"
+            f"  [blue]→[/blue] [green]{dest}[/green]"
+        )
 
-    for src, dest in actions:
-        table.add_row(str(src), "→", str(dest))
-
-    console.print(table)
+    console.print(f"\n[green]{verb} {len(actions)} item(s).[/green]")
 
 
 # ── config ───────────────────────────────────────────────────────────────
@@ -357,7 +404,12 @@ def rename(ctx: click.Context, path: str | None, dry_run: bool) -> None:
     cfg: Config = ctx.obj["cfg"]
     root = Path(path) if path else cfg.destination
 
-    items = scan_collection(root, cfg)
+    with console.status(
+        f"[bold green]Scanning collection at {root} …[/bold green]",
+        spinner="dots",
+    ):
+        items = scan_collection(root, cfg)
+
     renames: list[tuple[Path, Path]] = []
 
     for item in items:
@@ -372,17 +424,15 @@ def rename(ctx: click.Context, path: str | None, dry_run: bool) -> None:
         console.print("[green]All folders already match conventions.[/green]")
         return
 
-    table = Table(title=f"{'Would rename' if dry_run else 'Renaming'} {len(renames)} folder(s)")
-    table.add_column("Current", style="dim")
-    table.add_column("→")
-    table.add_column("New", style="green")
-
-    for old, new in renames:
-        table.add_row(old.name, "→", new.name)
-
-    console.print(table)
+    console.print(
+        f"\n[bold]{'Would rename' if dry_run else 'Renaming'} {len(renames)} folder(s):[/bold]\n"
+    )
+    for i, (old, new) in enumerate(renames, 1):
+        console.print(
+            f"  [dim]{i:>3}.[/dim] [dim]{old.name}[/dim]  [blue]→[/blue] [green]{new.name}[/green]"
+        )
+        if not dry_run:
+            old.rename(new)
 
     if not dry_run:
-        for old, new in renames:
-            old.rename(new)
         console.print(f"\n[green]Renamed {len(renames)} folder(s).[/green]")
