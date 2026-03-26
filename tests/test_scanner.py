@@ -1,5 +1,6 @@
 """Tests for audiobook_organizer.scanner — file/directory scanning."""
 
+import zipfile
 from pathlib import Path
 
 from audiobook_organizer.config import Config
@@ -10,6 +11,14 @@ def _make_audio_file(path: Path, size: int = 2_000_000) -> None:
     """Create a dummy audio file of specified size."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"\x00" * size)
+
+
+def _make_audiobook_zip(path: Path) -> None:
+    """Create a zip that contains an audio file and is large enough to pass filters."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as zf:
+        # Write a large-ish mp3 entry so the zip is > 50 MB
+        zf.writestr("audiobook.mp3", b"\x00" * 51_000_000)
 
 
 class TestScanSources:
@@ -26,12 +35,29 @@ class TestScanSources:
 
     def test_finds_archive(self, tmp_path):
         src = tmp_path / "downloads"
-        _make_audio_file(src / "Author - Book.zip")
+        _make_audiobook_zip(src / "Author - Book.zip")
 
         cfg = Config(source_dirs=[src], min_file_size=100)
         results = scan_sources(cfg)
         assert len(results) == 1
         assert results[0].kind == "archive"
+
+    def test_skips_non_audiobook_archive(self, tmp_path):
+        """Archives without audio content or without Author - Title naming are skipped."""
+        src = tmp_path / "downloads"
+        # No author in name
+        noname = src / "Sync.zip"
+        noname.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(noname, "w") as zf:
+            zf.writestr("data.txt", b"x" * 60_000_000)
+        # Proper name but no audio inside
+        no_audio = src / "Author - Book.zip"
+        with zipfile.ZipFile(no_audio, "w") as zf:
+            zf.writestr("readme.txt", b"x" * 60_000_000)
+
+        cfg = Config(source_dirs=[src], min_file_size=100)
+        results = scan_sources(cfg)
+        assert len(results) == 0
 
     def test_finds_audio_directory(self, tmp_path):
         src = tmp_path / "downloads"

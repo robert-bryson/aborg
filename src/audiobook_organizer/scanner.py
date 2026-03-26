@@ -2,11 +2,35 @@
 
 from __future__ import annotations
 
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    ProgressCallback = Callable[[str], None]
 
 from .config import Config
 from .parser import AudiobookMeta, merge_meta, parse_audio_tags, parse_filename
+
+# Archives below this size are almost certainly not audiobooks (50 MB).
+MIN_ARCHIVE_SIZE = 50_000_000
+
+# Filename stems that are clearly not audiobooks.
+_JUNK_PREFIXES = (
+    "sync",
+    "takeout",
+    "export",
+    "photos",
+    "backup",
+    "driver",
+    "asset-pack",
+    "omnivore",
+    "gpx",
+    "routes",
+)
 
 
 @dataclass
@@ -19,30 +43,56 @@ class ScanResult:
     size: int  # total bytes
 
 
-def scan_sources(cfg: Config) -> list[ScanResult]:
+def scan_sources(
+    cfg: Config,
+    *,
+    on_progress: ProgressCallback | None = None,
+) -> list[ScanResult]:
     """Walk all configured source directories and return discovered audiobooks."""
     results: list[ScanResult] = []
     seen: set[Path] = set()
+    _log = on_progress or (lambda _msg: None)
 
     for src_dir in cfg.source_dirs:
         if not src_dir.exists():
+            _log(f"[dim]Skipping missing dir: {src_dir}[/dim]")
             continue
+        _log(f"Scanning [cyan]{src_dir}[/cyan] …")
         for entry in sorted(src_dir.iterdir()):
             resolved = entry.resolve()
             if resolved in seen:
                 continue
             seen.add(resolved)
 
+            _log(f"  checking {entry.name}")
+
             if entry.is_file():
                 result = _check_file(entry, cfg)
                 if result:
+                    _log(f"  [green]✓[/green] {result.meta.author} — {result.meta.title}")
                     results.append(result)
             elif entry.is_dir():
                 result = _check_dir(entry, cfg)
                 if result:
+                    _log(f"  [green]✓[/green] {result.meta.author} — {result.meta.title}")
                     results.append(result)
 
     return results
+
+
+def _looks_like_junk(stem: str) -> bool:
+    """Return True if the filename clearly isn't an audiobook."""
+    low = stem.lower()
+    return any(low.startswith(p) for p in _JUNK_PREFIXES)
+
+
+def _zip_contains_audio(path: Path, audio_exts: frozenset[str]) -> bool:
+    """Peek inside a zip and return True if it contains audio files."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            return any(Path(name).suffix.lower() in audio_exts for name in zf.namelist())
+    except (zipfile.BadZipFile, OSError):
+        return False
 
 
 def _check_file(path: Path, cfg: Config) -> ScanResult | None:
@@ -54,7 +104,16 @@ def _check_file(path: Path, cfg: Config) -> ScanResult | None:
         return None
 
     if ext in cfg.archive_extensions:
+        # Quick rejection: too small or junk filename
+        if size < MIN_ARCHIVE_SIZE or _looks_like_junk(path.stem):
+            return None
+        # For zips, peek inside for audio files
+        if ext == ".zip" and not _zip_contains_audio(path, cfg.audio_extensions):
+            return None
+        # Must look like "Author - Title" (pattern match with a real author)
         meta = parse_filename(path.stem, cfg.filename_patterns)
+        if meta.author == "Unknown Author":
+            return None
         meta.source_path = path
         return ScanResult(path=path, kind="archive", meta=meta, size=size)
 

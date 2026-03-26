@@ -11,7 +11,7 @@ class TestConfigDefaults:
     def test_default_source_dirs(self):
         cfg = Config()
         assert len(cfg.source_dirs) == 1
-        assert cfg.source_dirs[0] == Path("~/Downloads").expanduser()
+        assert cfg.source_dirs[0] == Path("/mnt/c/Users/rsmbr/Downloads")
 
     def test_default_auto_extract(self):
         assert Config().auto_extract is True

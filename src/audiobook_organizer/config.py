@@ -46,7 +46,7 @@ MIN_FILE_SIZE = 1_048_576  # 1 MB
 
 @dataclass
 class Config:
-    source_dirs: list[Path] = field(default_factory=lambda: [Path("~/Downloads").expanduser()])
+    source_dirs: list[Path] = field(default_factory=lambda: [Path("/mnt/c/Users/rsmbr/Downloads")])
     destination: Path = field(default_factory=lambda: Path(DEFAULT_DESTINATION))
     archive_extensions: frozenset[str] = ARCHIVE_EXTS
     audio_extensions: frozenset[str] = AUDIO_EXTS

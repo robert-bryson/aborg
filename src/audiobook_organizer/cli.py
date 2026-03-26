@@ -54,7 +54,13 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...]) -> None:
     for d in extra_dirs:
         cfg.source_dirs.append(Path(d).expanduser())
 
-    items = scan_sources(cfg)
+    with console.status("[bold green]Scanning…[/bold green]", spinner="dots") as status:
+
+        def _progress(msg: str) -> None:
+            status.update(f"[bold green]Scanning:[/bold green] {msg}")
+
+        items = scan_sources(cfg, on_progress=_progress)
+
     if not items:
         console.print("[yellow]No audiobook files found.[/yellow]")
         return
@@ -65,7 +71,8 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...]) -> None:
     table.add_column("Title", style="bold")
     table.add_column("Series")
     table.add_column("Size", justify="right")
-    table.add_column("Source")
+    table.add_column("Source path", style="dim", max_width=50)
+    table.add_column("Destination", style="blue", max_width=50)
 
     for item in items:
         table.add_row(
@@ -74,7 +81,8 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...]) -> None:
             item.meta.title,
             f"{item.meta.series} #{item.meta.sequence}" if item.meta.series else "",
             _human_size(item.size),
-            str(item.path.name),
+            str(item.path),
+            str(cfg.destination / item.meta.dest_relative()),
         )
 
     console.print(table)
@@ -105,7 +113,13 @@ def org(
     if dest:
         cfg.destination = Path(dest)
 
-    items = scan_sources(cfg)
+    with console.status("[bold green]Scanning…[/bold green]", spinner="dots") as status:
+
+        def _org_progress(msg: str) -> None:
+            status.update(f"[bold green]Scanning:[/bold green] {msg}")
+
+        items = scan_sources(cfg, on_progress=_org_progress)
+
     if not items:
         console.print("[yellow]No audiobook files found.[/yellow]")
         return
@@ -121,7 +135,7 @@ def org(
 
     for item in items:
         rel_dest = item.meta.dest_relative()
-        table.add_row(str(item.path.name), "→", str(cfg.destination / rel_dest))
+        table.add_row(str(item.path), "→", str(cfg.destination / rel_dest))
 
     console.print(table)
 
