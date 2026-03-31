@@ -6,6 +6,8 @@ from pathlib import Path
 from audiobook_organizer.config import Config
 from audiobook_organizer.scanner import scan_collection, scan_sources
 
+from .conftest import make_cfg
+
 
 def _make_audio_file(path: Path, size: int = 2_000_000) -> None:
     """Create a dummy audio file of specified size."""
@@ -26,7 +28,7 @@ class TestScanSources:
         src = tmp_path / "downloads"
         _make_audio_file(src / "Author - Title.mp3")
 
-        cfg = Config(source_dirs=[src], min_file_size=100)
+        cfg = make_cfg(source_dirs=[src])
         results = scan_sources(cfg)
         assert len(results) == 1
         assert results[0].kind == "audio_file"
@@ -37,7 +39,7 @@ class TestScanSources:
         src = tmp_path / "downloads"
         _make_audiobook_zip(src / "Author - Book.zip")
 
-        cfg = Config(source_dirs=[src], min_file_size=100)
+        cfg = make_cfg(source_dirs=[src])
         results = scan_sources(cfg)
         assert len(results) == 1
         assert results[0].kind == "archive"
@@ -55,7 +57,7 @@ class TestScanSources:
         with zipfile.ZipFile(no_audio, "w") as zf:
             zf.writestr("readme.txt", b"x" * 60_000_000)
 
-        cfg = Config(source_dirs=[src], min_file_size=100)
+        cfg = make_cfg(source_dirs=[src])
         results = scan_sources(cfg)
         assert len(results) == 0
 
@@ -65,7 +67,7 @@ class TestScanSources:
         _make_audio_file(book_dir / "track01.mp3")
         _make_audio_file(book_dir / "track02.mp3")
 
-        cfg = Config(source_dirs=[src], min_file_size=100)
+        cfg = make_cfg(source_dirs=[src])
         results = scan_sources(cfg)
         assert len(results) == 1
         assert results[0].kind == "audio_dir"
@@ -74,7 +76,7 @@ class TestScanSources:
         src = tmp_path / "downloads"
         _make_audio_file(src / "tiny.mp3", size=50)
 
-        cfg = Config(source_dirs=[src], min_file_size=100)
+        cfg = make_cfg(source_dirs=[src])
         results = scan_sources(cfg)
         assert len(results) == 0
 
@@ -82,7 +84,7 @@ class TestScanSources:
         src = tmp_path / "downloads"
         _make_audio_file(src / "readme.txt", size=2_000_000)
 
-        cfg = Config(source_dirs=[src], min_file_size=100)
+        cfg = make_cfg(source_dirs=[src])
         results = scan_sources(cfg)
         assert len(results) == 0
 
@@ -95,7 +97,7 @@ class TestScanSources:
         src = tmp_path / "downloads"
         _make_audio_file(src / "Author - Title.mp3")
 
-        cfg = Config(source_dirs=[src, src], min_file_size=100)
+        cfg = make_cfg(source_dirs=[src, src])
         results = scan_sources(cfg)
         assert len(results) == 1
 
@@ -105,7 +107,7 @@ class TestScanSources:
         _make_audio_file(s1 / "Author1 - Book1.mp3")
         _make_audio_file(s2 / "Author2 - Book2.mp3")
 
-        cfg = Config(source_dirs=[s1, s2], min_file_size=100)
+        cfg = make_cfg(source_dirs=[s1, s2])
         results = scan_sources(cfg)
         assert len(results) == 2
 
@@ -115,7 +117,7 @@ class TestScanSources:
         _make_audiobook_zip(src / "Author - Title.zip")
         _make_audiobook_zip(src / "Author - Title(1).zip")
 
-        cfg = Config(source_dirs=[src], min_file_size=100)
+        cfg = make_cfg(source_dirs=[src])
         results = scan_sources(cfg)
         assert len(results) == 1
         assert results[0].meta.title == "Title"
@@ -126,7 +128,7 @@ class TestScanSources:
         book_dir = src / "French I"
         _make_audio_file(book_dir / "lesson01.mp3")
 
-        cfg = Config(source_dirs=[src], min_file_size=100)
+        cfg = make_cfg(source_dirs=[src])
         results = scan_sources(cfg)
         assert len(results) == 0
 
@@ -136,7 +138,7 @@ class TestScanCollection:
         _make_audio_file(tmp_path / "Author A" / "Book One" / "audio.mp3")
         _make_audio_file(tmp_path / "Author B" / "Book Two" / "audio.m4b")
 
-        cfg = Config(min_file_size=100)
+        cfg = make_cfg()
         collection = scan_collection(tmp_path, cfg)
         assert len(collection.items) == 2
         authors = {r.meta.author for r in collection.items}
@@ -150,7 +152,7 @@ class TestScanCollection:
         _make_audio_file(title1 / "audio.mp3")
         _make_audio_file(title2 / "audio.mp3")
 
-        cfg = Config(min_file_size=100)
+        cfg = make_cfg()
         collection = scan_collection(tmp_path, cfg)
         # The series dir itself has audio in subdirs → treated as a title dir
         assert len(collection.items) >= 1
@@ -170,7 +172,7 @@ class TestScanCollection:
         (tmp_path / "Author" / "EmptyBook").mkdir(parents=True)
         _make_audio_file(tmp_path / "Author" / "RealBook" / "audio.mp3")
 
-        cfg = Config(min_file_size=100)
+        cfg = make_cfg()
         collection = scan_collection(tmp_path, cfg)
         assert len(collection.empty_dirs) >= 1
         assert any(d.name == "EmptyBook" for d in collection.empty_dirs)
@@ -179,7 +181,7 @@ class TestScanCollection:
         _make_audio_file(tmp_path / "loose.mp3")
         _make_audio_file(tmp_path / "Author" / "Book" / "audio.mp3")
 
-        cfg = Config(min_file_size=100)
+        cfg = make_cfg()
         collection = scan_collection(tmp_path, cfg)
         assert len(collection.flat_audio_files) >= 1
         assert any(f.name == "loose.mp3" for f in collection.flat_audio_files)
@@ -189,7 +191,7 @@ class TestScanCollection:
         _make_audio_file(book_dir / "audio.mp3")
         (book_dir / "cover.jpg").write_bytes(b"\xff\xd8\xff")
 
-        cfg = Config(min_file_size=100)
+        cfg = make_cfg()
         collection = scan_collection(tmp_path, cfg)
         assert len(collection.items) == 1
         assert collection.items[0].has_cover is True
@@ -197,7 +199,7 @@ class TestScanCollection:
     def test_missing_cover_detected(self, tmp_path):
         _make_audio_file(tmp_path / "Author" / "Book" / "audio.mp3")
 
-        cfg = Config(min_file_size=100)
+        cfg = make_cfg()
         collection = scan_collection(tmp_path, cfg)
         assert len(collection.items) == 1
         assert collection.items[0].has_cover is False

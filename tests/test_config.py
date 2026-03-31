@@ -2,33 +2,34 @@
 
 from pathlib import Path
 
+import pytest
 import yaml
 
-from audiobook_organizer.config import DEFAULT_PATTERNS, Config
+from audiobook_organizer.config import Config
 
 
 class TestConfigDefaults:
-    def test_default_source_dirs(self):
+    """Bare Config() should have neutral zero-values (no hardcoded user data)."""
+
+    def test_default_source_dirs_empty(self):
         cfg = Config()
-        assert len(cfg.source_dirs) == 1
-        assert cfg.source_dirs[0] == Path("/mnt/c/Users/rsmbr/Downloads")
+        assert cfg.source_dirs == []
 
     def test_default_auto_extract(self):
-        assert Config().auto_extract is True
+        assert Config().auto_extract is False
 
     def test_default_delete_after_extract(self):
         assert Config().delete_after_extract is False
 
-    def test_default_patterns(self):
+    def test_default_patterns_empty(self):
         cfg = Config()
-        assert cfg.filename_patterns == DEFAULT_PATTERNS
+        assert cfg.filename_patterns == []
 
 
 class TestConfigLoad:
-    def test_load_missing_file_returns_defaults(self, tmp_path):
-        cfg = Config.load(tmp_path / "nonexistent.yaml")
-        assert cfg.auto_extract is True
-        assert len(cfg.source_dirs) == 1
+    def test_load_missing_file_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            Config.load(tmp_path / "nonexistent.yaml")
 
     def test_load_from_yaml(self, tmp_path):
         cfg_file = tmp_path / "config.yaml"
@@ -52,7 +53,7 @@ class TestConfigLoad:
         cfg_file = tmp_path / "config.yaml"
         cfg_file.write_text("")
         cfg = Config.load(cfg_file)
-        assert cfg.auto_extract is True  # defaults
+        assert cfg.auto_extract is False  # zero-value default
 
     def test_partial_override(self, tmp_path):
         cfg_file = tmp_path / "config.yaml"

@@ -9,8 +9,6 @@ from pathlib import Path
 from mutagen import File as MutagenFile
 from mutagen import MutagenError
 
-from .config import DEFAULT_PATTERNS
-
 
 @dataclass
 class AudiobookMeta:
@@ -64,7 +62,8 @@ def parse_filename(name: str, patterns: list[str] | None = None) -> AudiobookMet
 
     Tries each regex pattern in order; first match wins.
     """
-    patterns = patterns or DEFAULT_PATTERNS
+    if not patterns:
+        return AudiobookMeta(title=name.strip() or "Unknown Title")
     for pattern in patterns:
         m = re.match(pattern, name, re.IGNORECASE)
         if m:

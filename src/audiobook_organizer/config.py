@@ -1,4 +1,4 @@
-"""Configuration loading and defaults."""
+"""Configuration loading."""
 
 from __future__ import annotations
 
@@ -9,68 +9,38 @@ from typing import Any
 import yaml
 
 DEFAULT_CONFIG_PATH = Path("~/.aborg/config.yaml").expanduser()
-DEFAULT_DESTINATION = "/mnt/n/media/audiobooks"
-
-ARCHIVE_EXTS = frozenset({".zip", ".rar", ".7z"})
-AUDIO_EXTS = frozenset({".m4b", ".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wma", ".aac"})
-COMPANION_EXTS = frozenset(
-    {
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".pdf",
-        ".epub",
-        ".nfo",
-        ".cue",
-        ".txt",
-        ".opf",
-    }
-)
-
-# Default filename parsing patterns (tried in order)
-DEFAULT_PATTERNS: list[str] = [
-    # Author - Series Book 1 - Title (Year) [Narrator]
-    # Author - Series Book 1 - Title (Year) [Narrator]
-    r"(?P<author>.+?) - (?P<series>.+?)\s*(?:Book|Vol\.?|Volume)\s*(?P<sequence>\d+)"
-    r"\s*-\s*(?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*\[(?P<narrator>.+?)\])?$",
-    # Author - Title (Year) [Narrator]
-    r"(?P<author>.+?) - (?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*\[(?P<narrator>.+?)\])?$",
-    # Title - Author (Year)
-    r"(?P<title>.+?) - (?P<author>.+?)(?:\s*\((?P<year>\d{4})\))?$",
-    # Author_Title
-    r"(?P<author>[^_]+)_(?P<title>.+)$",
-]
-
-MIN_FILE_SIZE = 1_048_576  # 1 MB
 
 
 @dataclass
 class Config:
-    source_dirs: list[Path] = field(default_factory=lambda: [Path("/mnt/c/Users/rsmbr/Downloads")])
-    destination: Path = field(default_factory=lambda: Path(DEFAULT_DESTINATION))
-    archive_extensions: frozenset[str] = ARCHIVE_EXTS
-    audio_extensions: frozenset[str] = AUDIO_EXTS
-    companion_extensions: frozenset[str] = COMPANION_EXTS
-    auto_extract: bool = True
+    source_dirs: list[Path] = field(default_factory=list)
+    destination: Path = field(default_factory=lambda: Path())
+    archive_extensions: frozenset[str] = field(default_factory=frozenset)
+    audio_extensions: frozenset[str] = field(default_factory=frozenset)
+    companion_extensions: frozenset[str] = field(default_factory=frozenset)
+    auto_extract: bool = False
     delete_after_extract: bool = False
-    filename_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_PATTERNS))
-    min_file_size: int = MIN_FILE_SIZE
-    move_log: Path = field(default_factory=lambda: Path("~/.aborg/moves.log").expanduser())
+    filename_patterns: list[str] = field(default_factory=list)
+    min_file_size: int = 0
+    move_log: Path = field(default_factory=lambda: Path())
 
     # Libby / odmpy integration
-    libby_settings: Path = field(default_factory=lambda: Path("~/.aborg/libby").expanduser())
+    libby_settings: Path = field(default_factory=lambda: Path())
     libby_merge: bool = False
-    libby_merge_format: str = "m4b"
-    libby_chapters: bool = True
-    libby_keep_cover: bool = True
-    libby_book_folder_format: str = "%(Author)s - %(Title)s"
+    libby_merge_format: str = ""
+    libby_chapters: bool = False
+    libby_keep_cover: bool = False
+    libby_book_folder_format: str = ""
 
     @classmethod
     def load(cls, path: Path | None = None) -> Config:
-        """Load config from YAML file, falling back to defaults for missing keys."""
+        """Load config from YAML file."""
         cfg_path = path or DEFAULT_CONFIG_PATH
         if not cfg_path.exists():
-            return cls()
+            raise FileNotFoundError(
+                f"Config file not found: {cfg_path}\n"
+                f"  Create one by copying config.example.yaml to {DEFAULT_CONFIG_PATH}"
+            )
 
         with cfg_path.open() as f:
             raw: dict[str, Any] = yaml.safe_load(f) or {}
