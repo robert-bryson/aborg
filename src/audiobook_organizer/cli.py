@@ -10,6 +10,15 @@ from rich.table import Table
 
 from .analyzer import analyze_collection
 from .config import Config
+from .fetcher import (
+    FetchResult,
+    check_odmpy,
+    download_latest,
+    download_loan,
+    is_authenticated,
+    libby_setup,
+    list_loans,
+)
 from .organizer import organize, undo_last
 from .parser import parse_filename
 from .scanner import scan_collection, scan_sources
@@ -230,6 +239,210 @@ def org(
 
     verb_past = "Would move" if dry_run else ("Copied" if copy else "Moved")
     console.print(f"\n[green]{verb_past} {done} item(s).[/green]")
+
+
+# ── fetch (Libby / OverDrive) ───────────────────────────────────────────
+
+
+@cli.command()
+@click.option("--setup", "setup_code", default=None, help="8-digit Libby setup code to link account.")
+@click.option("--list", "list_only", is_flag=True, help="List current audiobook loans and exit.")
+@click.option("--latest", type=int, default=None, help="Download the latest N loans non-interactively.")
+@click.option("--select", "select_ids", multiple=True, help="Download specific loan(s) by ID.")
+@click.option("--all", "fetch_all", is_flag=True, help="Download all current audiobook loans.")
+@click.option("-d", "--download-dir", type=click.Path(), default=None, help="Override download directory (defaults to first source_dir).")
+@click.option("--organize", "auto_organize", is_flag=True, help="Automatically organize after downloading.")
+@click.option("--merge", is_flag=True, default=None, help="Merge MP3 parts into one file.")
+@click.option("--dry-run", is_flag=True, help="Show what would happen without downloading.")
+@click.pass_context
+def fetch(
+    ctx: click.Context,
+    setup_code: str | None,
+    list_only: bool,
+    latest: int | None,
+    select_ids: tuple[str, ...],
+    fetch_all: bool,
+    download_dir: str | None,
+    auto_organize: bool,
+    merge: bool | None,
+    dry_run: bool,
+) -> None:
+    """Download audiobook loans from Libby/OverDrive.
+
+    First-time setup:  aborg fetch --setup 12345678
+
+    Then list your loans:  aborg fetch --list
+
+    Download the latest loan:  aborg fetch --latest 1
+
+    Download and auto-organize:  aborg fetch --latest 1 --organize
+    """
+    cfg: Config = ctx.obj["cfg"]
+
+    # Check odmpy is installed
+    if not check_odmpy():
+        console.print(
+            "[red]odmpy is not installed.[/red]\n"
+            "Install it with: [bold]uv pip install .[/bold]"
+        )
+        ctx.exit(1)
+        return
+
+    settings = cfg.libby_settings
+
+    # ── Setup mode ──
+    if setup_code:
+        console.print("[dim]Linking Libby account…[/dim]")
+        ok, msg = libby_setup(settings, setup_code)
+        if ok:
+            console.print(f"[green]{msg}[/green]")
+        else:
+            console.print(f"[red]{msg}[/red]")
+            ctx.exit(1)
+        return
+
+    # Everything below requires authentication
+    if not is_authenticated(settings):
+        console.print(
+            "[yellow]No Libby account linked.[/yellow]\n"
+            "Run: [bold]aborg fetch --setup <8-digit-code>[/bold]\n"
+            "Get a code at: https://help.libbyapp.com/en-us/6070.htm"
+        )
+        ctx.exit(1)
+        return
+
+    # ── List loans ──
+    if list_only:
+        with console.status("[bold green]Fetching loans…[/bold green]", spinner="dots"):
+            loans = list_loans(settings)
+
+        if not loans:
+            console.print("[yellow]No downloadable audiobook loans found.[/yellow]")
+            return
+
+        table = Table(title="Audiobook Loans")
+        table.add_column("#", style="dim", width=3)
+        table.add_column("ID", style="dim", no_wrap=True)
+        table.add_column("Author", style="green", no_wrap=True)
+        table.add_column("Title", style="bold")
+
+        for loan in loans:
+            table.add_row(str(loan.index), loan.id, loan.author, loan.title)
+
+        console.print(table)
+        console.print(
+            f"\n[dim]Use [bold]aborg fetch --select <ID>[/bold] or "
+            f"[bold]aborg fetch --latest N[/bold] to download.[/dim]"
+        )
+        return
+
+    # ── Determine download target dir ──
+    dl_dir = Path(download_dir) if download_dir else cfg.source_dirs[0]
+    dl_dir = dl_dir.expanduser()
+
+    use_merge = merge if merge is not None else cfg.libby_merge
+
+    # ── Download latest N ──
+    if latest is not None:
+        if dry_run:
+            console.print(
+                f"[dim]DRY RUN — would download latest {latest} loan(s) to {dl_dir}[/dim]"
+            )
+            return
+
+        console.print(f"[dim]Downloading latest {latest} loan(s) to {dl_dir}…[/dim]")
+        with console.status("[bold green]Downloading…[/bold green]", spinner="dots"):
+            ok, output = download_latest(
+                settings,
+                dl_dir,
+                count=latest,
+                merge=use_merge,
+                merge_format=cfg.libby_merge_format,
+                chapters=cfg.libby_chapters,
+                keep_cover=cfg.libby_keep_cover,
+                book_folder_format=cfg.libby_book_folder_format,
+            )
+
+        if ok:
+            console.print(f"[green]Download complete.[/green]")
+        else:
+            console.print(f"[red]Download failed:[/red] {output}")
+            ctx.exit(1)
+            return
+
+        if auto_organize:
+            console.print()
+            ctx.invoke(org, extra_dirs=(), dest=None, dry_run=False, copy=False, yes=True)
+        return
+
+    # ── Download by ID(s) ──
+    if select_ids or fetch_all:
+        with console.status("[bold green]Fetching loans…[/bold green]", spinner="dots"):
+            loans = list_loans(settings)
+
+        if not loans:
+            console.print("[yellow]No downloadable audiobook loans found.[/yellow]")
+            return
+
+        if fetch_all:
+            to_download = loans
+        else:
+            id_set = set(select_ids)
+            to_download = [l for l in loans if l.id in id_set]
+            if not to_download:
+                console.print(f"[red]No loans matched IDs: {', '.join(select_ids)}[/red]")
+                console.print("[dim]Use [bold]aborg fetch --list[/bold] to see available IDs.[/dim]")
+                ctx.exit(1)
+                return
+
+        if dry_run:
+            console.print(f"[dim]DRY RUN — would download {len(to_download)} loan(s):[/dim]")
+            for loan in to_download:
+                console.print(f"  [dim]{loan.index}.[/dim] {loan.author} — {loan.title}")
+            return
+
+        console.print(f"Downloading [bold]{len(to_download)}[/bold] loan(s) to {dl_dir}…\n")
+        results: list[FetchResult] = []
+        for loan in to_download:
+            console.print(f"  [dim]↓[/dim] {loan.author} — [bold]{loan.title}[/bold]")
+            with console.status(f"[bold green]Downloading:[/bold green] {loan.title}", spinner="dots"):
+                result = download_loan(
+                    settings,
+                    dl_dir,
+                    loan,
+                    merge=use_merge,
+                    merge_format=cfg.libby_merge_format,
+                    chapters=cfg.libby_chapters,
+                    keep_cover=cfg.libby_keep_cover,
+                    book_folder_format=cfg.libby_book_folder_format,
+                )
+            results.append(result)
+            if result.success:
+                console.print(f"  [green]✓[/green] {loan.title}")
+            else:
+                console.print(f"  [red]✗[/red] {loan.title}: {result.message}")
+
+        ok_count = sum(1 for r in results if r.success)
+        fail_count = len(results) - ok_count
+        parts = [f"[green]{ok_count} downloaded[/green]"]
+        if fail_count:
+            parts.append(f"[red]{fail_count} failed[/red]")
+        console.print(f"\n{', '.join(parts)}.")
+
+        if auto_organize and ok_count:
+            console.print()
+            ctx.invoke(org, extra_dirs=(), dest=None, dry_run=False, copy=False, yes=True)
+        return
+
+    # ── No action specified — show help ──
+    console.print(
+        "[yellow]No action specified.[/yellow] Use one of:\n"
+        "  [bold]aborg fetch --setup CODE[/bold]    Link your Libby account\n"
+        "  [bold]aborg fetch --list[/bold]           List current loans\n"
+        "  [bold]aborg fetch --latest N[/bold]       Download latest N loans\n"
+        "  [bold]aborg fetch --select ID[/bold]      Download specific loan by ID\n"
+        "  [bold]aborg fetch --all[/bold]            Download all loans"
+    )
 
 
 # ── analyze ──────────────────────────────────────────────────────────────

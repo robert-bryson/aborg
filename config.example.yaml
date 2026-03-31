@@ -71,3 +71,24 @@ min_file_size: 1048576  # 1 MB
 
 # Move log file (for undo support)
 move_log: "~/.aborg/moves.log"
+
+# ── Libby / OverDrive integration (requires odmpy) ─────────────────────
+libby:
+  # Folder to store Libby authentication tokens
+  settings_folder: "~/.aborg/libby"
+
+  # Merge downloaded MP3 parts into a single file
+  merge: false
+
+  # Merged file format (mp3 or m4b; m4b requires ffmpeg)
+  merge_format: m4b
+
+  # Embed chapter markers in downloaded files
+  chapters: true
+
+  # Download cover art (cover.jpg)
+  keep_cover: true
+
+  # Folder name format for downloaded books (odmpy format string)
+  # Available: %(Title)s, %(Author)s, %(Series)s, %(ReadingOrder)s, %(Edition)s, %(ID)s
+  book_folder_format: "%(Author)s - %(Title)s"

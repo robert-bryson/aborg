@@ -57,6 +57,14 @@ class Config:
     min_file_size: int = MIN_FILE_SIZE
     move_log: Path = field(default_factory=lambda: Path("~/.aborg/moves.log").expanduser())
 
+    # Libby / odmpy integration
+    libby_settings: Path = field(default_factory=lambda: Path("~/.aborg/libby").expanduser())
+    libby_merge: bool = False
+    libby_merge_format: str = "m4b"
+    libby_chapters: bool = True
+    libby_keep_cover: bool = True
+    libby_book_folder_format: str = "%(Author)s - %(Title)s"
+
     @classmethod
     def load(cls, path: Path | None = None) -> Config:
         """Load config from YAML file, falling back to defaults for missing keys."""
@@ -90,6 +98,22 @@ class Config:
         if "move_log" in raw:
             kwargs["move_log"] = Path(raw["move_log"]).expanduser()
 
+        # Libby settings
+        libby = raw.get("libby", {})
+        if isinstance(libby, dict):
+            if "settings_folder" in libby:
+                kwargs["libby_settings"] = Path(libby["settings_folder"]).expanduser()
+            if "merge" in libby:
+                kwargs["libby_merge"] = bool(libby["merge"])
+            if "merge_format" in libby:
+                kwargs["libby_merge_format"] = str(libby["merge_format"])
+            if "chapters" in libby:
+                kwargs["libby_chapters"] = bool(libby["chapters"])
+            if "keep_cover" in libby:
+                kwargs["libby_keep_cover"] = bool(libby["keep_cover"])
+            if "book_folder_format" in libby:
+                kwargs["libby_book_folder_format"] = str(libby["book_folder_format"])
+
         return cls(**kwargs)
 
     def save(self, path: Path | None = None) -> None:
@@ -106,6 +130,14 @@ class Config:
             "filename_patterns": self.filename_patterns,
             "min_file_size": self.min_file_size,
             "move_log": str(self.move_log),
+            "libby": {
+                "settings_folder": str(self.libby_settings),
+                "merge": self.libby_merge,
+                "merge_format": self.libby_merge_format,
+                "chapters": self.libby_chapters,
+                "keep_cover": self.libby_keep_cover,
+                "book_folder_format": self.libby_book_folder_format,
+            },
         }
         with cfg_path.open("w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
