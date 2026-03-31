@@ -137,31 +137,67 @@ class TestScanCollection:
         _make_audio_file(tmp_path / "Author B" / "Book Two" / "audio.m4b")
 
         cfg = Config(min_file_size=100)
-        results = scan_collection(tmp_path, cfg)
-        assert len(results) == 2
-        authors = {r.meta.author for r in results}
+        collection = scan_collection(tmp_path, cfg)
+        assert len(collection.items) == 2
+        authors = {r.meta.author for r in collection.items}
         assert "Author A" in authors
         assert "Author B" in authors
 
     def test_scans_series_structure(self, tmp_path):
-        # scan_collection uses rglob, so audio in subdirs counts.
-        # Put audio directly in title dirs (not series root)
+        # Audio in subdirs of a series dir → each title dir is a separate book
         title1 = tmp_path / "Author" / "Series" / "Book 1"
         title2 = tmp_path / "Author" / "Series" / "Book 2"
         _make_audio_file(title1 / "audio.mp3")
         _make_audio_file(title2 / "audio.mp3")
 
         cfg = Config(min_file_size=100)
-        results = scan_collection(tmp_path, cfg)
-        # _count_audio uses rglob so Series dir has audio -> treated as title dir
-        # This is expected: the top-level Series dir is scanned as a single book
-        assert len(results) >= 1
-        assert any(r.meta.author == "Author" for r in results)
+        collection = scan_collection(tmp_path, cfg)
+        # The series dir itself has audio in subdirs → treated as a title dir
+        assert len(collection.items) >= 1
+        assert any(r.meta.author == "Author" for r in collection.items)
 
     def test_empty_collection(self, tmp_path):
         cfg = Config()
-        assert scan_collection(tmp_path, cfg) == []
+        collection = scan_collection(tmp_path, cfg)
+        assert collection.items == []
 
     def test_nonexistent_root(self, tmp_path):
         cfg = Config()
-        assert scan_collection(tmp_path / "nope", cfg) == []
+        collection = scan_collection(tmp_path / "nope", cfg)
+        assert collection.items == []
+
+    def test_detects_empty_dirs(self, tmp_path):
+        (tmp_path / "Author" / "EmptyBook").mkdir(parents=True)
+        _make_audio_file(tmp_path / "Author" / "RealBook" / "audio.mp3")
+
+        cfg = Config(min_file_size=100)
+        collection = scan_collection(tmp_path, cfg)
+        assert len(collection.empty_dirs) >= 1
+        assert any(d.name == "EmptyBook" for d in collection.empty_dirs)
+
+    def test_detects_flat_audio_files(self, tmp_path):
+        _make_audio_file(tmp_path / "loose.mp3")
+        _make_audio_file(tmp_path / "Author" / "Book" / "audio.mp3")
+
+        cfg = Config(min_file_size=100)
+        collection = scan_collection(tmp_path, cfg)
+        assert len(collection.flat_audio_files) >= 1
+        assert any(f.name == "loose.mp3" for f in collection.flat_audio_files)
+
+    def test_detects_cover_art(self, tmp_path):
+        book_dir = tmp_path / "Author" / "Book"
+        _make_audio_file(book_dir / "audio.mp3")
+        (book_dir / "cover.jpg").write_bytes(b"\xff\xd8\xff")
+
+        cfg = Config(min_file_size=100)
+        collection = scan_collection(tmp_path, cfg)
+        assert len(collection.items) == 1
+        assert collection.items[0].has_cover is True
+
+    def test_missing_cover_detected(self, tmp_path):
+        _make_audio_file(tmp_path / "Author" / "Book" / "audio.mp3")
+
+        cfg = Config(min_file_size=100)
+        collection = scan_collection(tmp_path, cfg)
+        assert len(collection.items) == 1
+        assert collection.items[0].has_cover is False

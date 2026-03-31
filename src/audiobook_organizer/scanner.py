@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,6 +39,9 @@ _JUNK_PREFIXES = (
 # Regex to strip Windows download-duplicate suffixes like "(1)", " (2)" etc.
 _DUP_SUFFIX_RE = re.compile(r"\s*\(\d+\)$")
 
+# Cover-art filenames recognised by Audiobookshelf.
+COVER_NAMES = frozenset({"cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png"})
+
 
 @dataclass
 class ScanResult:
@@ -47,6 +51,17 @@ class ScanResult:
     kind: str  # "archive", "audio_file", "audio_dir"
     meta: AudiobookMeta
     size: int  # total bytes
+    has_cover: bool = False
+    file_count: int = 0
+
+
+@dataclass
+class CollectionScan:
+    """Result of a single-pass collection scan, including filesystem metadata."""
+
+    items: list[ScanResult] = field(default_factory=list)
+    empty_dirs: list[Path] = field(default_factory=list)
+    flat_audio_files: list[Path] = field(default_factory=list)
 
 
 def scan_sources(
@@ -172,62 +187,201 @@ def _check_dir(path: Path, cfg: Config) -> ScanResult | None:
     return ScanResult(path=path, kind="audio_dir", meta=meta, size=total_size)
 
 
-def scan_collection(root: Path, cfg: Config) -> list[ScanResult]:
-    """Scan an existing organized collection at *root* and return all audiobooks found."""
-    results: list[ScanResult] = []
+def scan_collection(
+    root: Path,
+    cfg: Config,
+    *,
+    on_progress: ProgressCallback | None = None,
+    on_hit: HitCallback | None = None,
+    read_tags: bool = True,
+) -> CollectionScan:
+    """Scan an existing organized collection at *root* via a single-pass walk.
+
+    Returns a ``CollectionScan`` containing all discovered audiobooks plus
+    filesystem metadata (empty dirs, flat files, cover-art presence) gathered
+    during the same walk — no extra I/O needed by the analyzer.
+
+    Set *read_tags* to ``False`` to skip reading audio-file tags (faster
+    when author/title are already known from the directory structure).
+    """
+    result = CollectionScan()
     if not root.exists():
-        return results
+        return result
 
-    # Walk up to 3 levels deep: Author / [Series] / Title
-    for author_dir in sorted(root.iterdir()):
-        if not author_dir.is_dir() or author_dir.name.startswith("."):
+    _log = on_progress or (lambda _msg: None)
+    _hit = on_hit or (lambda _r: None)
+
+    audio_exts = cfg.audio_extensions
+
+    # ------------------------------------------------------------------
+    # Single pass: os.scandir the tree up to 3 levels deep
+    #   Level 0: root          → detect flat audio files
+    #   Level 1: author dirs
+    #   Level 2: title or series dirs
+    #   Level 3: title dirs inside a series
+    # ------------------------------------------------------------------
+
+    # Level 0 — root entries
+    root_str = str(root)
+    try:
+        root_entries = sorted(os.scandir(root_str), key=lambda e: e.name)
+    except OSError:
+        return result
+
+    for root_entry in root_entries:
+        if not root_entry.is_dir(follow_symlinks=False):
+            # Flat file in root
+            if root_entry.is_file(follow_symlinks=False):
+                ext = os.path.splitext(root_entry.name)[1].lower()
+                if ext in audio_exts:
+                    result.flat_audio_files.append(Path(root_entry.path))
             continue
-        for sub in sorted(author_dir.iterdir()):
-            if not sub.is_dir():
+
+        if root_entry.name.startswith("."):
+            continue
+
+        author_name = root_entry.name
+        _log(f"Scanning author: {author_name}")
+
+        # Level 1 — entries under author dir
+        try:
+            author_entries = sorted(os.scandir(root_entry.path), key=lambda e: e.name)
+        except OSError:
+            continue
+
+        for sub_entry in author_entries:
+            if not sub_entry.is_dir(follow_symlinks=False):
                 continue
-            # Could be a series dir or a title dir
-            audio_in_sub = _count_audio(sub, cfg)
-            if audio_in_sub > 0:
+
+            # Check whether this is a title dir (has audio) or a series dir
+            sub_info = _collect_dir_info(sub_entry.path, audio_exts)
+
+            if sub_info.audio_count > 0:
                 # This is a title dir directly under author
-                result = _scan_title_dir(sub, cfg, author=author_dir.name)
-                if result:
-                    results.append(result)
+                scan_result = _build_scan_result(
+                    Path(sub_entry.path),
+                    sub_info,
+                    cfg,
+                    author=author_name,
+                    read_tags=read_tags,
+                )
+                if scan_result:
+                    result.items.append(scan_result)
+                    _hit(scan_result)
             else:
-                # Could be a series dir — check children
-                for title_dir in sorted(sub.iterdir()):
-                    if title_dir.is_dir():
-                        result = _scan_title_dir(
-                            title_dir, cfg, author=author_dir.name, series=sub.name
+                # Empty or series dir — check children
+                if sub_info.total_children == 0:
+                    result.empty_dirs.append(Path(sub_entry.path))
+                    continue
+
+                series_name = sub_entry.name
+                try:
+                    series_entries = sorted(
+                        os.scandir(sub_entry.path), key=lambda e: e.name
+                    )
+                except OSError:
+                    continue
+
+                for title_entry in series_entries:
+                    if not title_entry.is_dir(follow_symlinks=False):
+                        continue
+                    title_info = _collect_dir_info(title_entry.path, audio_exts)
+                    if title_info.audio_count > 0:
+                        scan_result = _build_scan_result(
+                            Path(title_entry.path),
+                            title_info,
+                            cfg,
+                            author=author_name,
+                            series=series_name,
+                            read_tags=read_tags,
                         )
-                        if result:
-                            results.append(result)
-    return results
+                        if scan_result:
+                            result.items.append(scan_result)
+                            _hit(scan_result)
+                    elif title_info.total_children == 0:
+                        result.empty_dirs.append(Path(title_entry.path))
+
+    return result
 
 
-def _count_audio(directory: Path, cfg: Config) -> int:
-    return sum(
-        1 for f in directory.rglob("*") if f.is_file() and f.suffix.lower() in cfg.audio_extensions
-    )
+# ------------------------------------------------------------------
+# Internal helpers for the single-pass collection scanner
+# ------------------------------------------------------------------
 
 
-def _scan_title_dir(
-    path: Path, cfg: Config, author: str = "", series: str | None = None
+@dataclass
+class _DirInfo:
+    """Lightweight summary of a directory gathered in one scandir pass."""
+
+    audio_files: list[tuple[str, int]] = field(default_factory=list)  # (path, size)
+    audio_count: int = 0
+    total_size: int = 0
+    total_children: int = 0
+    has_cover: bool = False
+
+
+def _collect_dir_info(dir_path: str, audio_exts: frozenset[str]) -> _DirInfo:
+    """Walk *dir_path* recursively once, collecting audio file info and cover presence."""
+    info = _DirInfo()
+    stack = [dir_path]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = os.scandir(current)
+        except OSError:
+            continue
+        for entry in entries:
+            info.total_children += 1
+            if entry.is_dir(follow_symlinks=False):
+                stack.append(entry.path)
+            elif entry.is_file(follow_symlinks=False):
+                name_lower = entry.name.lower()
+                ext = os.path.splitext(name_lower)[1]
+                if ext in audio_exts:
+                    try:
+                        size = entry.stat().st_size
+                    except OSError:
+                        size = 0
+                    info.audio_files.append((entry.path, size))
+                    info.audio_count += 1
+                    info.total_size += size
+                if name_lower in COVER_NAMES:
+                    info.has_cover = True
+    return info
+
+
+def _build_scan_result(
+    path: Path,
+    info: _DirInfo,
+    cfg: Config,
+    *,
+    author: str = "",
+    series: str | None = None,
+    read_tags: bool = True,
 ) -> ScanResult | None:
-    audio_files = [
-        f for f in path.rglob("*") if f.is_file() and f.suffix.lower() in cfg.audio_extensions
-    ]
-    if not audio_files:
+    """Build a ScanResult from a pre-collected _DirInfo."""
+    if info.audio_count == 0:
         return None
 
-    total_size = sum(f.stat().st_size for f in audio_files)
-    tag_meta = parse_audio_tags(audio_files[0])
     dir_meta = parse_filename(path.name, cfg.filename_patterns)
 
-    meta = merge_meta(tag_meta, dir_meta)
+    if read_tags and info.audio_files:
+        tag_meta = parse_audio_tags(Path(info.audio_files[0][0]))
+        meta = merge_meta(tag_meta, dir_meta)
+    else:
+        meta = dir_meta
+
     if author:
         meta.author = author
     if series:
         meta.series = series
     meta.source_path = path
 
-    return ScanResult(path=path, kind="audio_dir", meta=meta, size=total_size)
+    return ScanResult(
+        path=path,
+        kind="audio_dir",
+        meta=meta,
+        size=info.total_size,
+        has_cover=info.has_cover,
+        file_count=info.audio_count,
+    )

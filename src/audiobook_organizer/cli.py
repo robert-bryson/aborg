@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import platform
+import re
+import subprocess
 from pathlib import Path
 
 import click
@@ -32,6 +35,78 @@ def _human_size(size: int) -> str:
             return f"{size:.1f} {unit}"
         size /= 1024  # type: ignore[assignment]
     return f"{size:.1f} PB"
+
+
+def _is_wsl() -> bool:
+    """Return True if running inside Windows Subsystem for Linux."""
+    try:
+        return "microsoft" in platform.uname().release.lower()
+    except Exception:
+        return False
+
+
+def _win_drive_unc(drive_letter: str) -> str | None:
+    """Query Windows for the UNC path of a mapped drive letter, or *None*."""
+    try:
+        out = subprocess.run(
+            ["cmd.exe", "/c", f"net use {drive_letter.upper()}:"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in out.stdout.splitlines():
+            if line.strip().startswith("Remote name"):
+                return line.split(None, 2)[-1].strip()
+    except Exception:
+        pass
+    return None
+
+
+def _check_wsl_mount(path: Path) -> str | None:
+    """If *path* looks like an unmounted WSL drive mount, return a hint message."""
+    if not _is_wsl():
+        return None
+    m = re.match(r"^/mnt/([a-z])(?:/|$)", str(path))
+    if not m:
+        return None
+    drive_letter = m.group(1)
+    mount_point = Path(f"/mnt/{drive_letter}")
+    # Mount point exists but is empty → drive not mounted
+    if not (mount_point.is_dir() and not any(mount_point.iterdir())):
+        return None
+
+    drive = drive_letter.upper()
+    unc = _win_drive_unc(drive_letter)
+    if unc:
+        # Network-mapped drive → needs CIFS, not drvfs
+        smb_path = unc.replace("\\", "/")
+        return (
+            f"The WSL mount point /mnt/{drive_letter} exists but appears empty — "
+            f"the {drive}: drive ({unc}) is likely not mounted.\n"
+            f"  Mount it with:  [bold]sudo mount -t cifs {smb_path} /mnt/{drive_letter} "
+            f"-o uid=1000,gid=1000[/bold]\n"
+            f"  To automount, add to /etc/fstab:  "
+            f"[bold]{smb_path} /mnt/{drive_letter} cifs uid=1000,gid=1000,soft 0 0[/bold]"
+        )
+    # Local drive → use drvfs
+    return (
+        f"The WSL mount point /mnt/{drive_letter} exists but appears empty — "
+        f"the {drive}: drive is likely not mounted.\n"
+        f"  Mount it with:  [bold]sudo mount -t drvfs {drive}: /mnt/{drive_letter}[/bold]\n"
+        f"  To automount, add to /etc/fstab:  "
+        f"[bold]{drive}: /mnt/{drive_letter} drvfs defaults 0 0[/bold]"
+    )
+
+
+def _require_dir(path: Path, label: str = "Directory") -> bool:
+    """Print an informative error if *path* doesn't exist. Returns True if OK."""
+    if path.exists():
+        return True
+    hint = _check_wsl_mount(path)
+    if hint:
+        console.print(f"[red]{label} not found: {path}[/red]")
+        console.print(f"[yellow]{hint}[/yellow]")
+    else:
+        console.print(f"[red]{label} not found: {path}[/red]")
+    return False
 
 
 @click.group()
@@ -109,12 +184,19 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool) -> None:
         console.print("[yellow]No audiobook files found.[/yellow]")
         return
 
-    parts = [f"Found [bold]{len(items)}[/bold] audiobook(s)"]
-    if new_count:
-        parts.append(f"[green]{new_count} new[/green]")
-    if exist_count:
-        parts.append(f"[yellow]{exist_count} already in collection[/yellow]")
-    console.print("\n" + ", ".join(parts) + ".")
+    total_size = sum(i.size for i in items)
+    authors = len({i.meta.author for i in items})
+
+    console.print()
+    summary = Table(title="Scan Summary", show_header=False)
+    summary.add_column("Metric", style="bold")
+    summary.add_column("Value", justify="right")
+    summary.add_row("Found", f"{len(items)} audiobook(s)")
+    summary.add_row("New", f"[green]{new_count}[/green]")
+    summary.add_row("Already in collection", f"[yellow]{exist_count}[/yellow]")
+    summary.add_row("Authors", str(authors))
+    summary.add_row("Total size", _human_size(total_size))
+    console.print(summary)
 
     if table:
         tbl = Table(show_lines=True)
@@ -461,15 +543,18 @@ def analyze(ctx: click.Context, path: str | None) -> None:
     cfg: Config = ctx.obj["cfg"]
     root = Path(path) if path else cfg.destination
 
-    if not root.exists():
-        console.print(f"[red]Directory not found: {root}[/red]")
+    if not _require_dir(root, "Collection directory"):
         return
 
     with console.status(
         f"[bold green]Analyzing {root} …[/bold green]",
         spinner="dots",
-    ):
-        report = analyze_collection(root, cfg)
+    ) as status:
+
+        def _on_progress(msg: str) -> None:
+            status.update(f"[bold green]Analyzing:[/bold green] {msg}")
+
+        report = analyze_collection(root, cfg, on_progress=_on_progress)
 
     console.print()
     # Summary
@@ -621,7 +706,8 @@ def rename(ctx: click.Context, path: str | None, dry_run: bool) -> None:
         f"[bold green]Scanning collection at {root} …[/bold green]",
         spinner="dots",
     ):
-        items = scan_collection(root, cfg)
+        collection = scan_collection(root, cfg)
+        items = collection.items
 
     renames: list[tuple[Path, Path]] = []
 

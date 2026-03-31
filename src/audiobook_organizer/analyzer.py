@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
 
 from .config import Config
-from .scanner import ScanResult, scan_collection
+from .scanner import CollectionScan, ScanResult, scan_collection
 
 
 @dataclass
@@ -43,9 +44,22 @@ class AnalysisReport:
         return [i for i in self.issues if i.severity == "warning"]
 
 
-def analyze_collection(root: Path, cfg: Config) -> AnalysisReport:
+# Re-export the callback type aliases so CLI can use a single import.
+ProgressCallback = Callable[[str], None]
+
+
+def analyze_collection(
+    root: Path,
+    cfg: Config,
+    *,
+    on_progress: ProgressCallback | None = None,
+) -> AnalysisReport:
     """Analyze the collection at *root* and return a detailed report."""
-    items = scan_collection(root, cfg)
+    _log = on_progress or (lambda _msg: None)
+
+    _log("Scanning collection…")
+    collection = scan_collection(root, cfg, on_progress=on_progress, read_tags=False)
+    items = collection.items
     report = AnalysisReport()
     report.total_books = len(items)
     report.total_size = sum(i.size for i in items)
@@ -59,13 +73,22 @@ def analyze_collection(root: Path, cfg: Config) -> AnalysisReport:
     report.authors = len(authors)
     report.series = len(series_set)
 
-    # Run checks
+    # Run checks — metadata, duplicates, and naming are pure in-memory.
+    # Empty dirs, flat files, and cover art use data already collected
+    # by the single-pass scan (no extra filesystem I/O).
+    _log("Checking metadata…")
     _check_unknown_metadata(items, report)
+    _log("Checking for duplicates…")
     _check_duplicates(items, report)
+    _log("Checking author name variants…")
     _check_author_variants(authors, report)
-    _check_empty_dirs(root, report)
-    _check_flat_files(root, cfg, report)
+    _log("Checking for empty directories…")
+    _check_empty_dirs(collection, report)
+    _log("Checking directory structure…")
+    _check_flat_files(collection, cfg, report)
+    _log("Checking cover art…")
     _check_missing_covers(items, report)
+    _log("Checking naming conventions…")
     _check_naming_conventions(items, report)
 
     return report
@@ -136,48 +159,40 @@ def _check_author_variants(authors: set[str], report: AnalysisReport) -> None:
                 )
 
 
-def _check_empty_dirs(root: Path, report: AnalysisReport) -> None:
-    """Flag empty directories in the collection."""
-    if not root.exists():
-        return
-    for d in root.rglob("*"):
-        if d.is_dir() and not any(d.iterdir()):
-            report.issues.append(
-                Issue(
-                    severity="info",
-                    category="cleanup",
-                    message="Empty directory",
-                    path=d,
-                    suggestion="Remove empty directory",
-                )
+def _check_empty_dirs(collection: CollectionScan, report: AnalysisReport) -> None:
+    """Flag empty directories discovered during the scan."""
+    for d in collection.empty_dirs:
+        report.issues.append(
+            Issue(
+                severity="info",
+                category="cleanup",
+                message="Empty directory",
+                path=d,
+                suggestion="Remove empty directory",
             )
+        )
 
 
-def _check_flat_files(root: Path, cfg: Config, report: AnalysisReport) -> None:
+def _check_flat_files(collection: CollectionScan, cfg: Config, report: AnalysisReport) -> None:
     """Flag audio files sitting directly in the root (not in Author/Title structure)."""
-    if not root.exists():
-        return
-    for f in root.iterdir():
-        if f.is_file() and f.suffix.lower() in cfg.audio_extensions:
-            report.issues.append(
-                Issue(
-                    severity="error",
-                    category="structure",
-                    message=f"Audio file in root directory: {f.name}",
-                    path=f,
-                    suggestion="Move into Author/Title folder structure",
-                )
+    for f in collection.flat_audio_files:
+        report.issues.append(
+            Issue(
+                severity="error",
+                category="structure",
+                message=f"Audio file in root directory: {f.name}",
+                path=f,
+                suggestion="Move into Author/Title folder structure",
             )
+        )
 
 
 def _check_missing_covers(items: list[ScanResult], report: AnalysisReport) -> None:
-    """Flag audiobooks without cover art."""
-    cover_names = {"cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png"}
+    """Flag audiobooks without cover art (using cached has_cover from scan)."""
     for item in items:
         if item.kind != "audio_dir" or item.path is None:
             continue
-        has_cover = any(f.name.lower() in cover_names for f in item.path.iterdir() if f.is_file())
-        if not has_cover:
+        if not item.has_cover:
             report.issues.append(
                 Issue(
                     severity="info",
