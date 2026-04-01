@@ -175,6 +175,8 @@ def _check_file(path: Path, cfg: Config) -> ScanResult | None:
         file_meta = parse_filename(path.stem, cfg.filename_patterns)
         tag_meta = parse_audio_tags(path)
         meta = merge_meta(tag_meta, file_meta)
+        if meta.author != "Unknown Author" and meta.title != "Unknown Title":
+            meta.title = strip_author_from_title(meta.title, meta.author)
         meta.source_path = path
         return ScanResult(path=path, kind="audio_file", meta=meta, size=size, tag_meta=tag_meta)
 
@@ -203,6 +205,9 @@ def _check_dir(path: Path, cfg: Config) -> ScanResult | None:
     # Skip directories where we can't identify an author (likely not an audiobook)
     if meta.author == "Unknown Author":
         return None
+    # Strip author name from title if it leaked through from tags or name.
+    if meta.title != "Unknown Title":
+        meta.title = strip_author_from_title(meta.title, meta.author)
     meta.source_path = path
 
     return ScanResult(

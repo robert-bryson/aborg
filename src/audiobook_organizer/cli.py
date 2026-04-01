@@ -158,15 +158,15 @@ def _require_cfg(ctx: click.Context) -> Config:
 @cli.command()
 @click.option("-d", "--dir", "extra_dirs", multiple=True, help="Additional directories to scan.")
 @click.option("--table", is_flag=True, help="Show results in a table instead of streaming.")
-@click.option("--no-cache", is_flag=True, help="Ignore cached results and rescan everything.")
+@click.option("--cache", is_flag=True, help="Use cached results from previous scans.")
 @click.pass_context
-def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, no_cache: bool) -> None:
+def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, cache: bool) -> None:
     """Scan source directories and show discovered audiobook files."""
     cfg = _require_cfg(ctx)
     for d in extra_dirs:
         cfg.source_dirs.append(Path(d).expanduser())
 
-    cache = None if no_cache else ScanCache()
+    scan_cache = ScanCache() if cache else None
 
     console.print(f"[dim]Scanning: {', '.join(str(d) for d in cfg.source_dirs)}[/dim]")
     console.print(f"[dim]Destination: {cfg.destination}[/dim]\n")
@@ -211,11 +211,11 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, no_cache:
             cfg,
             on_progress=_on_progress,
             on_hit=_on_hit,
-            cache=cache,
+            cache=scan_cache,
         )
 
-    if cache:
-        cache.save()
+    if scan_cache:
+        scan_cache.save()
 
     if missing_dirs:
         console.print()
@@ -279,7 +279,7 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, no_cache:
 @click.option("--dry-run", is_flag=True, help="Show what would happen without making changes.")
 @click.option("--copy", is_flag=True, help="Copy instead of move.")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt.")
-@click.option("--no-cache", is_flag=True, help="Ignore cached results and rescan everything.")
+@click.option("--cache", is_flag=True, help="Use cached results from previous scans.")
 @click.pass_context
 def org(
     ctx: click.Context,
@@ -288,7 +288,7 @@ def org(
     dry_run: bool,
     copy: bool,
     yes: bool,
-    no_cache: bool,
+    cache: bool,
 ) -> None:
     """Scan source directories and organize audiobooks into the destination."""
     cfg = _require_cfg(ctx)
@@ -297,7 +297,7 @@ def org(
     if dest:
         cfg.destination = Path(dest)
 
-    cache = None if no_cache else ScanCache()
+    scan_cache = ScanCache() if cache else None
 
     console.print(f"[dim]Scanning: {', '.join(str(d) for d in cfg.source_dirs)}[/dim]")
     console.print(f"[dim]Destination: {cfg.destination}[/dim]\n")
@@ -342,11 +342,11 @@ def org(
             cfg,
             on_progress=_org_progress,
             on_hit=_org_hit,
-            cache=cache,
+            cache=scan_cache,
         )
 
-    if cache:
-        cache.save()
+    if scan_cache:
+        scan_cache.save()
 
     if missing_dirs:
         console.print()
@@ -648,7 +648,7 @@ def fetch(
 @click.option("--fix", is_flag=True, help="Apply automatic fixes for detected issues.")
 @click.option("--dry-run", is_flag=True, help="Show what --fix would do without making changes.")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt when using --fix.")
-@click.option("--no-cache", is_flag=True, help="Ignore cached results and rescan everything.")
+@click.option("--cache", is_flag=True, help="Use cached results from previous scans.")
 @click.option("--check-tags", is_flag=True, help="Read audio tags and check metadata quality (slower).")
 @click.pass_context
 def analyze(
@@ -657,7 +657,7 @@ def analyze(
     fix: bool,
     dry_run: bool,
     yes: bool,
-    no_cache: bool,
+    cache: bool,
     check_tags: bool,
 ) -> None:
     """Analyze an existing audiobook collection and suggest improvements."""
@@ -667,7 +667,7 @@ def analyze(
     if not _require_dir(root, "Collection directory"):
         return
 
-    cache = None if no_cache else ScanCache()
+    scan_cache = ScanCache() if cache else None
 
     with console.status(
         f"[bold green]Analyzing {root} …[/bold green]",
@@ -678,11 +678,11 @@ def analyze(
             status.update(f"[bold green]Analyzing:[/bold green] {msg}")
 
         report = analyze_collection(
-            root, cfg, on_progress=_on_progress, cache=cache, read_tags=check_tags,
+            root, cfg, on_progress=_on_progress, cache=scan_cache, read_tags=check_tags,
         )
 
-    if cache:
-        cache.save()
+    if scan_cache:
+        scan_cache.save()
 
     # Build summary table (printed at the end)
     summary = Table(title="Collection Summary", show_header=False)
@@ -1039,24 +1039,24 @@ def config_cmd(ctx: click.Context, show: bool) -> None:
     help="Collection root (defaults to configured destination).",
 )
 @click.option("--dry-run", is_flag=True, help="Show what would be renamed.")
-@click.option("--no-cache", is_flag=True, help="Ignore cached results and rescan everything.")
+@click.option("--cache", is_flag=True, help="Use cached results from previous scans.")
 @click.pass_context
-def rename(ctx: click.Context, path: str | None, dry_run: bool, no_cache: bool) -> None:
+def rename(ctx: click.Context, path: str | None, dry_run: bool, cache: bool) -> None:
     """Rename folders in an existing collection to match Audiobookshelf conventions."""
     cfg = _require_cfg(ctx)
     root = Path(path) if path else cfg.destination
 
-    cache = None if no_cache else ScanCache()
+    scan_cache = ScanCache() if cache else None
 
     with console.status(
         f"[bold green]Scanning collection at {root} …[/bold green]",
         spinner="dots",
     ):
-        collection = scan_collection(root, cfg, cache=cache)
+        collection = scan_collection(root, cfg, cache=scan_cache)
         items = collection.items
 
-    if cache:
-        cache.save()
+    if scan_cache:
+        scan_cache.save()
 
     renames: list[tuple[Path, Path]] = []
 

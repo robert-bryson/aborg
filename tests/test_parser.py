@@ -109,6 +109,19 @@ class TestParseFilename:
         assert meta.sequence == "2"
         assert meta.title == "Stone of Tears"
 
+    def test_strips_audiobook_paren_from_pattern_match(self):
+        meta = parse_filename("Beverly Gage - G-Man (Pulitzer Prize Winner)", PATTERNS)
+        assert meta.author == "Beverly Gage"
+        assert meta.title == "G-Man"
+
+    def test_strips_audiobook_paren_from_fallback(self):
+        meta = parse_filename("Fear (Audiobook)", PATTERNS)
+        assert meta.title == "Fear"
+
+    def test_strips_audiobook_paren_no_patterns(self):
+        meta = parse_filename("Fear (Audiobook)")
+        assert meta.title == "Fear"
+
 
 # ── AudiobookMeta ────────────────────────────────────────────────────────
 
@@ -286,6 +299,24 @@ class TestCleanTagTitle:
 
     def test_empty_passthrough(self):
         assert _clean_tag_title("") == ""
+
+    def test_strips_pulitzer_prize_winner(self):
+        assert _clean_tag_title("G-Man (Pulitzer Prize Winner)") == "G-Man"
+
+    def test_strips_award_winner(self):
+        assert _clean_tag_title("The Overstory (National Book Award Winner)") == "The Overstory"
+
+    def test_strips_bestseller(self):
+        assert _clean_tag_title("Atomic Habits (#1 New York Times Bestseller)") == "Atomic Habits"
+
+    def test_leaves_non_award_parens(self):
+        assert _clean_tag_title("All About Love (New Visions)") == "All About Love (New Visions)"
+
+    def test_strips_audiobook_paren(self):
+        assert _clean_tag_title("Fear (Audiobook)") == "Fear"
+
+    def test_strips_unabridged_paren(self):
+        assert _clean_tag_title("Dune (Unabridged)") == "Dune"
 
 
 # ── parse_audio_tags (with mocked Mutagen) ───────────────────────────────
@@ -785,6 +816,36 @@ class TestParseTitleFolder:
         expected = "Terry Goodkind/Sword of Truth/Vol 1 - 1994 - Wizards First Rule"
         assert str(meta.dest_relative()) == expected
 
+    def test_strips_by_author_and_audiobook_paren(self):
+        """Messy download folder: 'Title by Author (Audiobook)' is cleaned."""
+        meta = parse_title_folder(
+            "Fear, Trump in the White House by Bob Woodward (Audiobook)",
+            "Woodward, Bob",
+            PATTERNS,
+        )
+        assert meta.author == "Woodward, Bob"
+        assert meta.title == "Fear, Trump in the White House"
+
+    def test_strips_by_author_no_parens(self):
+        """Folder with 'by Author' but no parenthetical."""
+        meta = parse_title_folder(
+            "The Great Gatsby by F. Scott Fitzgerald",
+            "F. Scott Fitzgerald",
+            PATTERNS,
+        )
+        assert meta.title == "The Great Gatsby"
+        assert meta.author == "F. Scott Fitzgerald"
+
+    def test_strips_audiobook_paren_no_by_author(self):
+        """Folder with (Audiobook) but no 'by Author'."""
+        meta = parse_title_folder(
+            "Fear (Audiobook)",
+            "Bob Woodward",
+            PATTERNS,
+        )
+        assert meta.title == "Fear"
+        assert meta.author == "Bob Woodward"
+
 
 # ── strip_author_from_title ──────────────────────────────────────────────
 
@@ -802,3 +863,9 @@ class TestStripAuthorFromTitle:
         assert strip_author_from_title(
             "The Final Empire", "Brandon Sanderson"
         ) == "The Final Empire"
+
+    def test_strips_by_author(self):
+        assert strip_author_from_title(
+            "Fear, Trump in the White House by Bob Woodward",
+            "Woodward, Bob",
+        ) == "Fear, Trump in the White House"

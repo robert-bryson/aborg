@@ -119,21 +119,24 @@ def parse_filename(name: str, patterns: list[str] | None = None) -> AudiobookMet
     Tries each regex pattern in order; first match wins.
     """
     if not patterns:
-        return AudiobookMeta(title=name.strip() or "Unknown Title")
+        title = _NOISE_PAREN_RE.sub("", name).strip() or "Unknown Title"
+        return AudiobookMeta(title=title)
     for pattern in patterns:
         m = re.match(pattern, name, re.IGNORECASE)
         if m:
             g = m.groupdict()
+            raw_title = g.get("title", "").strip() or "Unknown Title"
             return AudiobookMeta(
                 author=g.get("author", "").strip() or "Unknown Author",
-                title=g.get("title", "").strip() or "Unknown Title",
+                title=_NOISE_PAREN_RE.sub("", raw_title).strip() or raw_title,
                 series=(g.get("series") or "").strip() or None,
                 sequence=(g.get("sequence") or "").strip() or None,
                 year=(g.get("year") or "").strip() or None,
                 narrator=(g.get("narrator") or "").strip() or None,
             )
     # Fallback: use the whole name as the title
-    return AudiobookMeta(title=name.strip() or "Unknown Title")
+    title = _NOISE_PAREN_RE.sub("", name).strip() or "Unknown Title"
+    return AudiobookMeta(title=title)
 
 
 # Regex matching common separators in folder names: " - ", " – ", " — "
@@ -280,8 +283,28 @@ def _parse_title_remainder(text: str) -> AudiobookMeta:
         meta.year = text
         return meta
 
-    meta.title = text
+    # Strip noise parentheticals from title
+    text = _NOISE_PAREN_RE.sub("", text).strip()
+    meta.title = text or "Unknown Title"
     return meta
+
+
+def _strip_by_author(text: str, known_author: str) -> str:
+    """Remove a trailing ``by Author Name`` from *text* using fuzzy matching."""
+    from difflib import SequenceMatcher
+
+    m = re.search(r"\s+by\s+(.+)$", text, re.IGNORECASE)
+    if not m:
+        return text
+    candidate = m.group(1).strip()
+    # Also strip noise parens from the candidate so "by Bob Woodward (Audiobook)" works
+    candidate = _NOISE_PAREN_RE.sub("", candidate).strip()
+    variants = _author_variants(known_author)
+    cand_low = candidate.lower()
+    for variant in variants:
+        if SequenceMatcher(None, cand_low, variant).ratio() > 0.8:
+            return text[: m.start()].strip()
+    return text
 
 
 def parse_title_folder(
@@ -304,6 +327,12 @@ def parse_title_folder(
         narrator = m_narrator.group(1).strip()
         clean_name = name[: m_narrator.start()].strip(" -\u2013\u2014")
 
+    # Strip noise parentheticals early so they don't interfere.
+    clean_name = _NOISE_PAREN_RE.sub("", clean_name).strip()
+
+    # Strip trailing "by Author Name".
+    clean_name = _strip_by_author(clean_name, known_author)
+
     # Step 1: try stripping the known author from the folder name.
     stripped = _strip_author_from_name(clean_name, known_author)
     if stripped is not None:
@@ -314,13 +343,15 @@ def parse_title_folder(
         return meta
 
     # Step 2: try interpreting as a direct title/year (no author expected).
-    remainder = _parse_title_remainder(name)
+    remainder = _parse_title_remainder(clean_name)
     if remainder.title != "Unknown Title" or remainder.year:
         remainder.author = known_author
+        if narrator and not remainder.narrator:
+            remainder.narrator = narrator
         return remainder
 
     # Step 3: fall back to standard pattern-based parsing.
-    meta = parse_filename(name, patterns)
+    meta = parse_filename(clean_name, patterns)
     meta.author = known_author
     return meta
 
@@ -328,7 +359,11 @@ def parse_title_folder(
 def strip_author_from_title(title: str, known_author: str) -> str:
     """Remove the known author's name from a title string."""
     cleaned = _strip_author_from_name(title, known_author)
-    return cleaned if cleaned else title
+    if cleaned:
+        return cleaned
+    # Try "by Author" pattern
+    stripped = _strip_by_author(title, known_author)
+    return stripped if stripped != title else title
 
 
 def parse_audio_tags(path: Path) -> AudiobookMeta:
@@ -371,12 +406,25 @@ def parse_audio_tags(path: Path) -> AudiobookMeta:
     return meta
 
 
+# Trailing parenthetical noise to strip from titles (awards, format labels, etc.).
+_NOISE_PAREN_RE = re.compile(
+    r"\s*\((?:"
+    r"[^)]*(?:prize|award|winner|bestseller|best seller|medal|finalist"
+    r"|nominee|honor|notable)[^)]*"
+    r"|audiobook|unabridged|abridged|audio edition|audio cd"
+    r")\)",
+    re.IGNORECASE,
+)
+
+
 def _clean_tag_title(title: str) -> str:
     """Strip common album-tag noise such as leading disc/track numbers."""
     if not title or title == "Unknown Title":
         return title
     # "03 - Book 1 - ..." → "Book 1 - ..."
     cleaned = re.sub(r"^\d+\s*[-.:]+\s*", "", title)
+    # "G-Man (Pulitzer Prize Winner)" → "G-Man"
+    cleaned = _NOISE_PAREN_RE.sub("", cleaned)
     return cleaned.strip() or title
 
 
