@@ -263,7 +263,7 @@ class TestMetadataQuality:
                 meta=AudiobookMeta(author="Isaac Asimov", title="Foundation"),
                 size=1000,
                 tag_meta=AudiobookMeta(
-                    author="Asimov, Isaac",
+                    author="Ray Bradbury",
                     title="Foundation",
                 ),
             ),
@@ -271,6 +271,44 @@ class TestMetadataQuality:
         _check_metadata_quality(items, report)
         mismatch = [i for i in report.issues if "differs from folder" in i.message]
         assert len(mismatch) == 1
+
+    def test_no_mismatch_for_flipped_author_name(self):
+        """'Last, First' in folder should match 'First Last' in tags."""
+        report = self._make_report()
+        items = [
+            ScanResult(
+                path=Path("/collection/Asimov, Isaac/Foundation"),
+                kind="audio_dir",
+                meta=AudiobookMeta(author="Asimov, Isaac", title="Foundation"),
+                size=1000,
+                tag_meta=AudiobookMeta(
+                    author="Isaac Asimov",
+                    title="Foundation",
+                ),
+            ),
+        ]
+        _check_metadata_quality(items, report)
+        mismatch = [i for i in report.issues if "differs from folder" in i.message]
+        assert len(mismatch) == 0
+
+    def test_no_mismatch_for_slash_separated_tag_author(self):
+        """Tag 'Author/Narrator' should match folder 'Last, First'."""
+        report = self._make_report()
+        items = [
+            ScanResult(
+                path=Path("/collection/Arendt, Hannah/Some Book"),
+                kind="audio_dir",
+                meta=AudiobookMeta(author="Arendt, Hannah", title="Some Book"),
+                size=1000,
+                tag_meta=AudiobookMeta(
+                    author="Hannah Arendt/Tavia Gilbert",
+                    title="Some Book",
+                ),
+            ),
+        ]
+        _check_metadata_quality(items, report)
+        mismatch = [i for i in report.issues if "differs from folder" in i.message]
+        assert len(mismatch) == 0
 
     def test_flags_title_with_numbering(self):
         report = self._make_report()

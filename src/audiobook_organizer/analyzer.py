@@ -65,6 +65,26 @@ class AnalysisReport:
 ProgressCallback = Callable[[str], None]
 
 
+def _normalize_to_first_last(name: str) -> str:
+    """Normalize a single author name to 'First Last' lowercase form."""
+    name = name.strip()
+    if is_last_first(name):
+        name = flip_author_name(name)
+    return name.lower()
+
+
+def _same_author(tag_author: str, folder_author: str) -> bool:
+    """Return True if *tag_author* and *folder_author* refer to the same person.
+
+    Handles 'First Last' vs 'Last, First' format differences and tag authors
+    that contain multiple people separated by '/'.
+    """
+    # The tag may contain multiple people (e.g. "Author/Narrator").
+    # Compare the primary (first) author against the folder author.
+    primary = tag_author.split("/")[0]
+    return _normalize_to_first_last(primary) == _normalize_to_first_last(folder_author)
+
+
 def analyze_collection(
     root: Path,
     cfg: Config,
@@ -326,7 +346,7 @@ def _check_metadata_quality(items: list[ScanResult], report: AnalysisReport) -> 
         if (
             tag.author != "Unknown Author"
             and item.meta.author != "Unknown Author"
-            and tag.author.lower() != item.meta.author.lower()
+            and not _same_author(tag.author, item.meta.author)
             and looks_like_author(tag.author)
         ):
             report.issues.append(
