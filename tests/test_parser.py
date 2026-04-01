@@ -8,13 +8,17 @@ import pytest
 from audiobook_organizer.parser import (
     AudiobookMeta,
     _clean_tag_title,
+    _parse_title_remainder,
     _sanitize,
+    _strip_author_from_name,
     looks_like_author,
     merge_meta,
     normalize_path_name,
     parse_audio_tags,
     parse_filename,
+    parse_title_folder,
     path_parent_name,
+    strip_author_from_title,
 )
 
 # Patterns used in tests (same as the defaults shipped in config.yaml)
@@ -335,3 +339,141 @@ class TestParseAudioTags:
         meta = parse_audio_tags(Path("/fake/audio.mp3"))
         assert meta.author == "Unknown Author"
         assert meta.title == "Unknown Title"
+
+
+# ── _strip_author_from_name ──────────────────────────────────────────────
+
+
+class TestStripAuthorFromName:
+    def test_strips_exact_match(self):
+        assert _strip_author_from_name(
+            "I, Robot - Isaac Asimov - 1950", "Isaac Asimov"
+        ) == "I, Robot - 1950"
+
+    def test_strips_flipped_name(self):
+        # Known author is "Last, First" but folder has "First Last"
+        assert _strip_author_from_name(
+            "I, Robot - Isaac Asimov - 1950", "Asimov, Isaac"
+        ) == "I, Robot - 1950"
+
+    def test_strips_with_typo(self):
+        # "Issac" vs "Isaac" — fuzzy match should handle it
+        assert _strip_author_from_name(
+            "Isaac Asimov - 1951", "Asimov, Issac"
+        ) == "1951"
+
+    def test_returns_none_for_no_match(self):
+        assert _strip_author_from_name(
+            "Foundation - 1951", "Brandon Sanderson"
+        ) is None
+
+    def test_returns_none_for_single_segment(self):
+        assert _strip_author_from_name("Foundation", "Isaac Asimov") is None
+
+    def test_strips_from_three_segments(self):
+        result = _strip_author_from_name(
+            "Book 1 - Foundation - Isaac Asimov", "Asimov, Issac"
+        )
+        assert result == "Book 1 - Foundation"
+
+
+# ── _parse_title_remainder ───────────────────────────────────────────────
+
+
+class TestParseTitleRemainder:
+    def test_title_dash_year(self):
+        meta = _parse_title_remainder("I, Robot - 1950")
+        assert meta.title == "I, Robot"
+        assert meta.year == "1950"
+
+    def test_title_paren_year(self):
+        meta = _parse_title_remainder("Foundation (1951)")
+        assert meta.title == "Foundation"
+        assert meta.year == "1951"
+
+    def test_year_dash_title(self):
+        meta = _parse_title_remainder("1951 - Foundation")
+        assert meta.title == "Foundation"
+        assert meta.year == "1951"
+
+    def test_bare_year(self):
+        meta = _parse_title_remainder("1951")
+        assert meta.title == "Unknown Title"
+        assert meta.year == "1951"
+
+    def test_plain_title(self):
+        meta = _parse_title_remainder("Foundation")
+        assert meta.title == "Foundation"
+        assert meta.year is None
+
+    def test_empty_string(self):
+        meta = _parse_title_remainder("")
+        assert meta.title == "Unknown Title"
+        assert meta.year is None
+
+
+# ── parse_title_folder ───────────────────────────────────────────────────
+
+
+class TestParseTitleFolder:
+    def test_strips_author_extracts_title_and_year(self):
+        meta = parse_title_folder(
+            "I, Robot - Isaac Asimov - 1950", "Asimov, Issac", PATTERNS,
+        )
+        assert meta.author == "Asimov, Issac"
+        assert meta.title == "I, Robot"
+        assert meta.year == "1950"
+
+    def test_author_only_remainder_is_year(self):
+        meta = parse_title_folder("Isaac Asimov - 1951", "Asimov, Issac", PATTERNS)
+        assert meta.author == "Asimov, Issac"
+        assert meta.title == "Unknown Title"
+        assert meta.year == "1951"
+
+    def test_no_author_in_name_uses_remainder(self):
+        meta = parse_title_folder("Foundation", "Asimov, Isaac", PATTERNS)
+        assert meta.author == "Asimov, Isaac"
+        assert meta.title == "Foundation"
+
+    def test_year_title_format(self):
+        meta = parse_title_folder("1951 - Foundation", "Asimov, Isaac", PATTERNS)
+        assert meta.title == "Foundation"
+        assert meta.year == "1951"
+        assert meta.author == "Asimov, Isaac"
+
+    def test_fallback_to_parse_filename(self):
+        # No author found in name, but it has "Title (Year)" structure
+        meta = parse_title_folder(
+            "Mistborn Book 1 - The Final Empire (2006)",
+            "Brandon Sanderson",
+            PATTERNS,
+        )
+        assert meta.author == "Brandon Sanderson"
+        # _parse_title_remainder captures full text as title with year
+        assert meta.title == "Mistborn Book 1 - The Final Empire"
+        assert meta.year == "2006"
+
+    def test_dest_folder_name_after_fix(self):
+        """The dest_folder_name should now be correct for the I, Robot case."""
+        meta = parse_title_folder(
+            "I, Robot - Isaac Asimov - 1950", "Asimov, Issac", PATTERNS,
+        )
+        assert meta.dest_folder_name() == "1950 - I, Robot"
+
+
+# ── strip_author_from_title ──────────────────────────────────────────────
+
+
+class TestStripAuthorFromTitle:
+    def test_strips_author_from_tag_title(self):
+        assert strip_author_from_title(
+            "Book 1 - Foundation - Isaac Asimov", "Asimov, Issac"
+        ) == "Book 1 - Foundation"
+
+    def test_leaves_clean_title(self):
+        assert strip_author_from_title("Foundation", "Isaac Asimov") == "Foundation"
+
+    def test_leaves_title_without_author(self):
+        assert strip_author_from_title(
+            "The Final Empire", "Brandon Sanderson"
+        ) == "The Final Empire"

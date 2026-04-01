@@ -136,6 +136,113 @@ def parse_filename(name: str, patterns: list[str] | None = None) -> AudiobookMet
     return AudiobookMeta(title=name.strip() or "Unknown Title")
 
 
+# Regex matching common separators in folder names: " - ", " – ", " — "
+_SEP_RE = re.compile(r"\s+[-\u2013\u2014]\s+")
+
+
+def _author_variants(author: str) -> list[str]:
+    """Return lowercase name variants (First Last / Last, First) for matching."""
+    low = author.strip().lower()
+    variants = [low]
+    if "," in low:
+        parts = low.split(",", 1)
+        variants.append(f"{parts[1].strip()} {parts[0].strip()}")
+    else:
+        parts = low.rsplit(None, 1)
+        if len(parts) == 2:
+            variants.append(f"{parts[1]}, {parts[0]}")
+    return variants
+
+
+def _strip_author_from_name(name: str, known_author: str) -> str | None:
+    """Remove the known author from *name* by matching dash-separated segments.
+
+    Uses fuzzy matching (>0.8 similarity) to handle typos and name-format
+    differences.  Returns the cleaned remainder, or *None* if no match.
+    """
+    from difflib import SequenceMatcher
+
+    segments = _SEP_RE.split(name)
+    if len(segments) < 2:
+        return None
+
+    variants = _author_variants(known_author)
+    for i, segment in enumerate(segments):
+        seg_low = segment.strip().lower()
+        for variant in variants:
+            if SequenceMatcher(None, seg_low, variant).ratio() > 0.8:
+                remaining = [s for j, s in enumerate(segments) if j != i]
+                result = " - ".join(remaining).strip()
+                return result if result else None
+    return None
+
+
+def _parse_title_remainder(text: str) -> AudiobookMeta:
+    """Parse a title/year string remaining after the author has been stripped."""
+    meta = AudiobookMeta()
+    text = text.strip()
+    if not text:
+        return meta
+
+    # "Title - Year" or "Title (Year)"
+    m = re.match(r"^(.+?)\s*[-\u2013\u2014]\s*(\d{4})$", text)
+    if not m:
+        m = re.match(r"^(.+?)\s*\((\d{4})\)\s*$", text)
+    if m and m.group(1).strip():
+        meta.title = m.group(1).strip()
+        meta.year = m.group(2)
+        return meta
+
+    # "Year - Title"
+    m = re.match(r"^(\d{4})\s*[-\u2013\u2014]\s*(.+)$", text)
+    if m:
+        meta.year = m.group(1)
+        meta.title = m.group(2).strip()
+        return meta
+
+    # Bare year — record it but leave title unknown
+    if re.match(r"^\d{4}$", text):
+        meta.year = text
+        return meta
+
+    meta.title = text
+    return meta
+
+
+def parse_title_folder(
+    name: str, known_author: str, patterns: list[str] | None = None,
+) -> AudiobookMeta:
+    """Parse a title folder name when the author is already known.
+
+    Tries to strip the known author from the folder name before extracting
+    title, year, and other metadata.  Falls back to ``parse_filename`` when
+    the author isn't found in the name.
+    """
+    # Step 1: try stripping the known author from the folder name.
+    stripped = _strip_author_from_name(name, known_author)
+    if stripped is not None:
+        meta = _parse_title_remainder(stripped)
+        meta.author = known_author
+        return meta
+
+    # Step 2: try interpreting as a direct title/year (no author expected).
+    remainder = _parse_title_remainder(name)
+    if remainder.title != "Unknown Title" or remainder.year:
+        remainder.author = known_author
+        return remainder
+
+    # Step 3: fall back to standard pattern-based parsing.
+    meta = parse_filename(name, patterns)
+    meta.author = known_author
+    return meta
+
+
+def strip_author_from_title(title: str, known_author: str) -> str:
+    """Remove the known author's name from a title string."""
+    cleaned = _strip_author_from_name(title, known_author)
+    return cleaned if cleaned else title
+
+
 def parse_audio_tags(path: Path) -> AudiobookMeta:
     """Read ID3/audio metadata from an audio file using Mutagen.
 

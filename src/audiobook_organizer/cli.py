@@ -24,7 +24,17 @@ from .fetcher import (
     list_loans,
 )
 from .organizer import organize, undo_last
-from .parser import AudiobookMeta, looks_like_author, merge_meta, normalize_path_name, parse_audio_tags, parse_filename, path_parent_name
+from .parser import (
+    AudiobookMeta,
+    looks_like_author,
+    merge_meta,
+    normalize_path_name,
+    parse_audio_tags,
+    parse_filename,
+    parse_title_folder,
+    path_parent_name,
+    strip_author_from_title,
+)
 from .scanner import scan_collection, scan_sources
 
 console = Console()
@@ -793,21 +803,27 @@ def parse(ctx: click.Context, filename: str) -> None:
     name = normalize_path_name(filename)
     console.print(f"[dim]Parsed name:[/dim]  {name}")
 
-    # ── Parse the folder/file name (same as scanner does) ────────────
-    name_meta = parse_filename(name, cfg.filename_patterns)
-
-    # ── Try ancestors for supplementary author context ────────────────
+    # ── Identify the parent folder (potential author) ────────────────
     normalized = filename.replace("\\", "/").rstrip("/")
     parts = [p for p in normalized.split("/") if p]
 
     parent = parts[-2] if len(parts) >= 2 else None
+    known_author: str | None = None
     parent_meta = AudiobookMeta()
     if parent:
         parent_parsed = parse_filename(parent, cfg.filename_patterns)
-        if parent_parsed.author != "Unknown Author":
+        if parent_parsed.author != "Unknown Author" and looks_like_author(parent_parsed.author):
+            known_author = parent_parsed.author
             parent_meta = parent_parsed
         elif looks_like_author(parent):
+            known_author = parent
             parent_meta.author = parent
+
+    # ── Parse the folder/file name (author-aware when possible) ──────
+    if known_author:
+        name_meta = parse_title_folder(name, known_author, cfg.filename_patterns)
+    else:
+        name_meta = parse_filename(name, cfg.filename_patterns)
 
     # ── If it's an actual audio file, read tags (same as scanner) ────
     path = Path(filename)
@@ -819,6 +835,10 @@ def parse(ctx: click.Context, filename: str) -> None:
 
     # ── Merge sources (same priority as scanner: tags > name > parent)
     merged = merge_meta(tag_meta, name_meta, parent_meta)
+
+    # Strip author from title if it leaked through from tags.
+    if merged.author != "Unknown Author" and merged.title != "Unknown Title":
+        merged.title = strip_author_from_title(merged.title, merged.author)
 
     # If merged author is obviously wrong, search path ancestors for a
     # clean author name (skip "Author - Title" style components).

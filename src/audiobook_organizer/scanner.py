@@ -19,7 +19,14 @@ if TYPE_CHECKING:
 import re
 
 from .config import Config
-from .parser import AudiobookMeta, merge_meta, parse_audio_tags, parse_filename
+from .parser import (
+    AudiobookMeta,
+    merge_meta,
+    parse_audio_tags,
+    parse_filename,
+    parse_title_folder,
+    strip_author_from_title,
+)
 
 # Archives below this size are almost certainly not audiobooks (50 MB).
 MIN_ARCHIVE_SIZE = 50_000_000
@@ -391,7 +398,10 @@ def _build_scan_result(
     if info.audio_count == 0:
         return None
 
-    dir_meta = parse_filename(path.name, cfg.filename_patterns)
+    if author:
+        dir_meta = parse_title_folder(path.name, author, cfg.filename_patterns)
+    else:
+        dir_meta = parse_filename(path.name, cfg.filename_patterns)
 
     if read_tags and info.audio_files:
         tag_meta = parse_audio_tags(Path(info.audio_files[0][0]))
@@ -402,6 +412,9 @@ def _build_scan_result(
 
     if author:
         meta.author = author
+    # Strip author name from title if it leaked through from tags or name.
+    if author and meta.title != "Unknown Title":
+        meta.title = strip_author_from_title(meta.title, author)
     if series:
         meta.series = series
     meta.source_path = path
