@@ -11,8 +11,9 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from .analyzer import analyze_collection
-from .config import Config
+from .analyzer import FixAction, analyze_collection, apply_fixes
+from .cache import ScanCache
+from .config import DEFAULT_CONFIG_PATH, Config
 from .fetcher import (
     FetchResult,
     check_odmpy,
@@ -123,7 +124,22 @@ def cli(ctx: click.Context, config_path: str | None) -> None:
     """aborg — scan, organize, and manage your collection."""
     ctx.ensure_object(dict)
     cfg_path = Path(config_path) if config_path else None
-    ctx.obj["cfg"] = Config.load(cfg_path)
+    try:
+        ctx.obj["cfg"] = Config.load(cfg_path)
+    except FileNotFoundError:
+        ctx.obj["cfg"] = None
+        ctx.obj["cfg_path"] = cfg_path or DEFAULT_CONFIG_PATH
+
+
+def _require_cfg(ctx: click.Context) -> Config:
+    """Return the loaded Config or exit with a helpful message."""
+    cfg = ctx.obj["cfg"]
+    if cfg is not None:
+        return cfg
+    cfg_path = ctx.obj["cfg_path"]
+    console.print(f"[red]Config file not found:[/red] {cfg_path}")
+    console.print("[yellow]Run [bold]aborg config[/bold] to create one.[/yellow]")
+    raise SystemExit(1)
 
 
 # ── scan ─────────────────────────────────────────────────────────────────
@@ -132,12 +148,15 @@ def cli(ctx: click.Context, config_path: str | None) -> None:
 @cli.command()
 @click.option("-d", "--dir", "extra_dirs", multiple=True, help="Additional directories to scan.")
 @click.option("--table", is_flag=True, help="Show results in a table instead of streaming.")
+@click.option("--no-cache", is_flag=True, help="Ignore cached results and rescan everything.")
 @click.pass_context
-def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool) -> None:
+def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, no_cache: bool) -> None:
     """Scan source directories and show discovered audiobook files."""
-    cfg: Config = ctx.obj["cfg"]
+    cfg = _require_cfg(ctx)
     for d in extra_dirs:
         cfg.source_dirs.append(Path(d).expanduser())
+
+    cache = None if no_cache else ScanCache()
 
     console.print(f"[dim]Scanning: {', '.join(str(d) for d in cfg.source_dirs)}[/dim]")
     console.print(f"[dim]Destination: {cfg.destination}[/dim]\n")
@@ -178,7 +197,11 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool) -> None:
             cfg,
             on_progress=_on_progress,
             on_hit=_on_hit,
+            cache=cache,
         )
+
+    if cache:
+        cache.save()
 
     if not items:
         console.print("[yellow]No audiobook files found.[/yellow]")
@@ -229,6 +252,7 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool) -> None:
 @click.option("--dry-run", is_flag=True, help="Show what would happen without making changes.")
 @click.option("--copy", is_flag=True, help="Copy instead of move.")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt.")
+@click.option("--no-cache", is_flag=True, help="Ignore cached results and rescan everything.")
 @click.pass_context
 def org(
     ctx: click.Context,
@@ -237,13 +261,16 @@ def org(
     dry_run: bool,
     copy: bool,
     yes: bool,
+    no_cache: bool,
 ) -> None:
     """Scan source directories and organize audiobooks into the destination."""
-    cfg: Config = ctx.obj["cfg"]
+    cfg = _require_cfg(ctx)
     for d in extra_dirs:
         cfg.source_dirs.append(Path(d).expanduser())
     if dest:
         cfg.destination = Path(dest)
+
+    cache = None if no_cache else ScanCache()
 
     console.print(f"[dim]Scanning: {', '.join(str(d) for d in cfg.source_dirs)}[/dim]")
     console.print(f"[dim]Destination: {cfg.destination}[/dim]\n")
@@ -284,7 +311,11 @@ def org(
             cfg,
             on_progress=_org_progress,
             on_hit=_org_hit,
+            cache=cache,
         )
+
+    if cache:
+        cache.save()
 
     if not items:
         console.print("[yellow]No audiobook files found.[/yellow]")
@@ -302,6 +333,26 @@ def org(
     if not dry_run and not yes and not click.confirm(prompt):
         console.print("[yellow]Aborted.[/yellow]")
         return
+
+    if not dry_run:
+        dest = cfg.destination
+        if not dest.exists():
+            console.print(
+                f"[red]Error:[/red] Destination does not exist: [bold]{dest}[/bold]\n"
+                f"  Create it or check your config."
+            )
+            raise SystemExit(1)
+        import tempfile
+        try:
+            with tempfile.NamedTemporaryFile(dir=dest):
+                pass
+        except OSError:
+            console.print(
+                f"[red]Error:[/red] Destination is not writable: [bold]{dest}[/bold]\n"
+                f"  If this is a network mount, check that it is mounted with read-write permissions.\n"
+                f"  Hint: [dim]mount | grep {dest.name}[/dim]"
+            )
+            raise SystemExit(1)
 
     console.print()
     verb = "Would move" if dry_run else ("Copying" if copy else "Moving")
@@ -359,7 +410,7 @@ def fetch(
 
     Download and auto-organize:  aborg fetch --latest 1 --organize
     """
-    cfg: Config = ctx.obj["cfg"]
+    cfg = _require_cfg(ctx)
 
     # Check odmpy is installed
     if not check_odmpy():
@@ -537,14 +588,22 @@ def fetch(
     default=None,
     help="Collection root to analyze (defaults to configured destination).",
 )
+@click.option("--fix", is_flag=True, help="Apply automatic fixes for detected issues.")
+@click.option("--dry-run", is_flag=True, help="Show what --fix would do without making changes.")
+@click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt when using --fix.")
+@click.option("--no-cache", is_flag=True, help="Ignore cached results and rescan everything.")
 @click.pass_context
-def analyze(ctx: click.Context, path: str | None) -> None:
+def analyze(
+    ctx: click.Context, path: str | None, fix: bool, dry_run: bool, yes: bool, no_cache: bool,
+) -> None:
     """Analyze an existing audiobook collection and suggest improvements."""
-    cfg: Config = ctx.obj["cfg"]
+    cfg = _require_cfg(ctx)
     root = Path(path) if path else cfg.destination
 
     if not _require_dir(root, "Collection directory"):
         return
+
+    cache = None if no_cache else ScanCache()
 
     with console.status(
         f"[bold green]Analyzing {root} …[/bold green]",
@@ -554,7 +613,10 @@ def analyze(ctx: click.Context, path: str | None) -> None:
         def _on_progress(msg: str) -> None:
             status.update(f"[bold green]Analyzing:[/bold green] {msg}")
 
-        report = analyze_collection(root, cfg, on_progress=_on_progress)
+        report = analyze_collection(root, cfg, on_progress=_on_progress, cache=cache)
+
+    if cache:
+        cache.save()
 
     console.print()
     # Summary
@@ -600,6 +662,49 @@ def analyze(ctx: click.Context, path: str | None) -> None:
         msg = f"Found {n} similar author name(s) that may need standardizing."
         console.print(f"\n[blue]{msg}[/blue]")
 
+    # ── Apply fixes ──────────────────────────────────────────────────
+    fixable = [i for i in report.issues if i.fix is not None]
+    if not fixable:
+        if fix or dry_run:
+            console.print("\n[dim]No automatically fixable issues found.[/dim]")
+        return
+
+    if not fix and not dry_run:
+        console.print(
+            f"\n[dim]{len(fixable)} issue(s) can be fixed automatically. "
+            f"Re-run with [bold]--fix[/bold] to apply.[/dim]"
+        )
+        return
+
+    if fix and not dry_run and not yes:
+        console.print()
+        if not click.confirm(f"Apply {len(fixable)} automatic fix(es)?"):
+            console.print("[yellow]Aborted.[/yellow]")
+            return
+
+    verb = "Would apply" if dry_run else "Applying"
+    console.print(f"\n[bold]{verb} {len(fixable)} fix(es):[/bold]\n")
+
+    def _on_fix(action: FixAction, ok: bool, err: str) -> None:
+        icon = "[green]\u2713[/green]" if ok else "[red]\u2717[/red]"
+        if dry_run:
+            icon = "[dim]\u2022[/dim]"
+        reason = f" [red dim]({err})[/red dim]" if err and not ok else ""
+        if action.kind == "remove_dir":
+            console.print(f"  {icon} Remove empty directory: [dim]{action.source}[/dim]{reason}")
+        elif action.kind == "rename":
+            console.print(
+                f"  {icon} Rename: [dim]{action.source.name}[/dim]"
+                f" [blue]\u2192[/blue] [green]{action.target.name}[/green]{reason}"
+            )
+
+    applied = apply_fixes(report, dry_run=dry_run, on_fix=_on_fix)
+
+    if dry_run:
+        console.print(f"\n[dim]{len(applied)} fix(es) would be applied.[/dim]")
+    else:
+        console.print(f"\n[green]Applied {len(applied)} fix(es).[/green]")
+
 
 # ── parse (utility) ─────────────────────────────────────────────────────
 
@@ -609,7 +714,7 @@ def analyze(ctx: click.Context, path: str | None) -> None:
 @click.pass_context
 def parse(ctx: click.Context, filename: str) -> None:
     """Parse a filename and show what metadata would be extracted."""
-    cfg: Config = ctx.obj["cfg"]
+    cfg = _require_cfg(ctx)
     meta = parse_filename(filename, cfg.filename_patterns)
 
     table = Table(title=f"Parsed: {filename}", show_header=False)
@@ -634,7 +739,7 @@ def parse(ctx: click.Context, filename: str) -> None:
 @click.pass_context
 def undo(ctx: click.Context, dry_run: bool) -> None:
     """Undo the most recent organize operation."""
-    cfg: Config = ctx.obj["cfg"]
+    cfg = _require_cfg(ctx)
     actions = undo_last(cfg, dry_run=dry_run)
 
     if not actions:
@@ -656,33 +761,112 @@ def undo(ctx: click.Context, dry_run: bool) -> None:
 # ── config ───────────────────────────────────────────────────────────────
 
 
-@cli.command("config")
-@click.option("--init", is_flag=True, help="Create a default config file.")
-@click.option("--show", is_flag=True, help="Print current configuration.")
-@click.pass_context
-def config_cmd(ctx: click.Context, init: bool, show: bool) -> None:
-    """Manage configuration."""
-    cfg: Config = ctx.obj["cfg"]
+def _show_config(cfg: Config) -> None:
+    """Print config as a Rich table."""
+    table = Table(title="Current Configuration", show_header=False)
+    table.add_column("Key", style="bold")
+    table.add_column("Value")
+    table.add_row("Source dirs", ", ".join(str(d) for d in cfg.source_dirs) or "(none)")
+    table.add_row("Destination", str(cfg.destination) or "(none)")
+    table.add_row("Auto extract", str(cfg.auto_extract))
+    table.add_row("Delete after extract", str(cfg.delete_after_extract))
+    table.add_row("Min file size", _human_size(cfg.min_file_size))
+    table.add_row("Move log", str(cfg.move_log))
+    table.add_row("Archive exts", ", ".join(sorted(cfg.archive_extensions)))
+    table.add_row("Audio exts", ", ".join(sorted(cfg.audio_extensions)))
+    table.add_row("Patterns", f"{len(cfg.filename_patterns)} pattern(s)")
+    console.print(table)
 
-    if init:
-        cfg.save()
-        console.print(f"[green]Config written to {cfg.move_log.parent / 'config.yaml'}[/green]")
+
+def _config_wizard(cfg_path: Path) -> None:
+    """Interactive setup wizard — walk the user through creating a config."""
+    console.print("\n[bold]aborg configuration setup[/bold]\n")
+
+    cfg = Config.default()
+
+    # ── Source directories ────────────────────────────────────────────
+    console.print(
+        "[dim]Source directories are where aborg looks for new audiobook files\n"
+        "(e.g. your Downloads folder).  Enter one path per line, blank to finish.[/dim]"
+    )
+    dirs: list[Path] = []
+    while True:
+        prompt = f"  Source dir [{len(dirs) + 1}]" if not dirs else f"  Source dir [{len(dirs) + 1}] (blank to finish)"
+        raw = click.prompt(prompt, default="", show_default=False).strip()
+        if not raw:
+            if not dirs:
+                console.print("  [yellow]At least one source directory is required.[/yellow]")
+                continue
+            break
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            console.print(f"  [yellow]Please enter an absolute path (got: {raw})[/yellow]")
+            continue
+        dirs.append(p)
+    cfg.source_dirs = dirs
+
+    # ── Destination ───────────────────────────────────────────────────
+    console.print(
+        "\n[dim]Destination is the root of your organized audiobook collection\n"
+        "(the library that Audiobookshelf points to).[/dim]"
+    )
+    while True:
+        raw = click.prompt("  Destination", type=str).strip()
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            console.print(f"  [yellow]Please enter an absolute path (got: {raw})[/yellow]")
+            continue
+        cfg.destination = p
+        break
+
+    # ── Auto-extract archives ─────────────────────────────────────────
+    cfg.auto_extract = click.confirm(
+        "\n  Auto-extract zip/rar/7z archives at destination?", default=cfg.auto_extract,
+    )
+
+    # ── Delete after extract ──────────────────────────────────────────
+    if cfg.auto_extract:
+        cfg.delete_after_extract = click.confirm(
+            "  Delete archive after successful extraction?", default=cfg.delete_after_extract,
+        )
+
+    # ── Review & confirm ──────────────────────────────────────────────
+    console.print()
+    _show_config(cfg)
+    console.print(f"\n  [dim]Config will be saved to: {cfg_path}[/dim]")
+
+    if not click.confirm("\n  Save this configuration?", default=True):
+        console.print("[yellow]Aborted — nothing was written.[/yellow]")
         return
 
-    if show or not init:
-        table = Table(title="Current Configuration", show_header=False)
-        table.add_column("Key", style="bold")
-        table.add_column("Value")
-        table.add_row("Source dirs", ", ".join(str(d) for d in cfg.source_dirs))
-        table.add_row("Destination", str(cfg.destination))
-        table.add_row("Auto extract", str(cfg.auto_extract))
-        table.add_row("Delete after extract", str(cfg.delete_after_extract))
-        table.add_row("Min file size", _human_size(cfg.min_file_size))
-        table.add_row("Move log", str(cfg.move_log))
-        table.add_row("Archive exts", ", ".join(sorted(cfg.archive_extensions)))
-        table.add_row("Audio exts", ", ".join(sorted(cfg.audio_extensions)))
-        table.add_row("Patterns", f"{len(cfg.filename_patterns)} pattern(s)")
-        console.print(table)
+    cfg.save(cfg_path)
+    console.print(f"\n[green]Config saved to {cfg_path}[/green]")
+    console.print("You can edit it later or re-run [bold]aborg config[/bold] at any time.")
+
+
+@cli.command("config")
+@click.option("--show", is_flag=True, help="Print current configuration.")
+@click.pass_context
+def config_cmd(ctx: click.Context, show: bool) -> None:
+    """Show current configuration, or create a new one interactively."""
+    cfg = ctx.obj["cfg"]
+    cfg_path = ctx.obj.get("cfg_path") or DEFAULT_CONFIG_PATH
+
+    if cfg is not None and show:
+        _show_config(cfg)
+        return
+
+    if cfg is not None and not show:
+        _show_config(cfg)
+        console.print(f"\n  [dim]Loaded from: {cfg_path}[/dim]")
+        return
+
+    # No config exists — offer to create one
+    console.print(f"[yellow]No config file found at {cfg_path}[/yellow]")
+    if not click.confirm("Would you like to create one now?", default=True):
+        return
+
+    _config_wizard(cfg_path)
 
 
 # ── rename (batch rename existing collection) ────────────────────────────
@@ -696,18 +880,24 @@ def config_cmd(ctx: click.Context, init: bool, show: bool) -> None:
     help="Collection root (defaults to configured destination).",
 )
 @click.option("--dry-run", is_flag=True, help="Show what would be renamed.")
+@click.option("--no-cache", is_flag=True, help="Ignore cached results and rescan everything.")
 @click.pass_context
-def rename(ctx: click.Context, path: str | None, dry_run: bool) -> None:
+def rename(ctx: click.Context, path: str | None, dry_run: bool, no_cache: bool) -> None:
     """Rename folders in an existing collection to match Audiobookshelf conventions."""
-    cfg: Config = ctx.obj["cfg"]
+    cfg = _require_cfg(ctx)
     root = Path(path) if path else cfg.destination
+
+    cache = None if no_cache else ScanCache()
 
     with console.status(
         f"[bold green]Scanning collection at {root} …[/bold green]",
         spinner="dots",
     ):
-        collection = scan_collection(root, cfg)
+        collection = scan_collection(root, cfg, cache=cache)
         items = collection.items
+
+    if cache:
+        cache.save()
 
     renames: list[tuple[Path, Path]] = []
 

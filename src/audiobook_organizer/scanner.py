@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from .cache import ScanCache
+
     ProgressCallback = Callable[[str], None]
     HitCallback = Callable[["ScanResult"], None]
 
@@ -69,6 +71,7 @@ def scan_sources(
     *,
     on_progress: ProgressCallback | None = None,
     on_hit: HitCallback | None = None,
+    cache: ScanCache | None = None,
 ) -> list[ScanResult]:
     """Walk all configured source directories and return discovered audiobooks."""
     results: list[ScanResult] = []
@@ -90,23 +93,26 @@ def scan_sources(
 
             _log(f"  checking {entry.name}")
 
-            if entry.is_file():
-                result = _check_file(entry, cfg)
-                if result:
-                    dedup_key = f"{result.meta.author}::{result.meta.title}".lower()
-                    if dedup_key in seen_titles:
-                        _log(f"  [yellow]skip duplicate[/yellow] {entry.name}")
-                        continue
-                    seen_titles.add(dedup_key)
-                    _log(f"  [green]✓[/green] {result.meta.author} — {result.meta.title}")
-                    results.append(result)
-                    _hit(result)
-            elif entry.is_dir():
-                result = _check_dir(entry, cfg)
-                if result:
-                    _log(f"  [green]✓[/green] {result.meta.author} — {result.meta.title}")
-                    results.append(result)
-                    _hit(result)
+            # Try cache first
+            result: ScanResult | None = cache.get(entry) if cache else None
+
+            if result is None:
+                if entry.is_file():
+                    result = _check_file(entry, cfg)
+                elif entry.is_dir():
+                    result = _check_dir(entry, cfg)
+                if result and cache:
+                    cache.put(entry, result)
+
+            if result:
+                dedup_key = f"{result.meta.author}::{result.meta.title}".lower()
+                if dedup_key in seen_titles:
+                    _log(f"  [yellow]skip duplicate[/yellow] {entry.name}")
+                    continue
+                seen_titles.add(dedup_key)
+                _log(f"  [green]✓[/green] {result.meta.author} — {result.meta.title}")
+                results.append(result)
+                _hit(result)
 
     return results
 
@@ -194,6 +200,7 @@ def scan_collection(
     on_progress: ProgressCallback | None = None,
     on_hit: HitCallback | None = None,
     read_tags: bool = True,
+    cache: ScanCache | None = None,
 ) -> CollectionScan:
     """Scan an existing organized collection at *root* via a single-pass walk.
 
@@ -258,13 +265,18 @@ def scan_collection(
 
             if sub_info.audio_count > 0:
                 # This is a title dir directly under author
-                scan_result = _build_scan_result(
-                    Path(sub_entry.path),
-                    sub_info,
-                    cfg,
-                    author=author_name,
-                    read_tags=read_tags,
-                )
+                sub_path = Path(sub_entry.path)
+                scan_result = cache.get(sub_path) if cache else None
+                if scan_result is None:
+                    scan_result = _build_scan_result(
+                        sub_path,
+                        sub_info,
+                        cfg,
+                        author=author_name,
+                        read_tags=read_tags,
+                    )
+                    if scan_result and cache:
+                        cache.put(sub_path, scan_result)
                 if scan_result:
                     result.items.append(scan_result)
                     _hit(scan_result)
@@ -287,14 +299,19 @@ def scan_collection(
                         continue
                     title_info = _collect_dir_info(title_entry.path, audio_exts)
                     if title_info.audio_count > 0:
-                        scan_result = _build_scan_result(
-                            Path(title_entry.path),
-                            title_info,
-                            cfg,
-                            author=author_name,
-                            series=series_name,
-                            read_tags=read_tags,
-                        )
+                        title_path = Path(title_entry.path)
+                        scan_result = cache.get(title_path) if cache else None
+                        if scan_result is None:
+                            scan_result = _build_scan_result(
+                                title_path,
+                                title_info,
+                                cfg,
+                                author=author_name,
+                                series=series_name,
+                                read_tags=read_tags,
+                            )
+                            if scan_result and cache:
+                                cache.put(title_path, scan_result)
                         if scan_result:
                             result.items.append(scan_result)
                             _hit(scan_result)

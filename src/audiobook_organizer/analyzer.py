@@ -7,9 +7,22 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .cache import ScanCache
 
 from .config import Config
 from .scanner import CollectionScan, ScanResult, scan_collection
+
+
+@dataclass
+class FixAction:
+    """An automated fix that can be applied for an issue."""
+
+    kind: str  # "remove_dir", "rename"
+    source: Path
+    target: Path | None = None  # for renames
 
 
 @dataclass
@@ -21,6 +34,7 @@ class Issue:
     message: str
     path: Path | None = None
     suggestion: str | None = None
+    fix: FixAction | None = None
 
 
 @dataclass
@@ -53,12 +67,13 @@ def analyze_collection(
     cfg: Config,
     *,
     on_progress: ProgressCallback | None = None,
+    cache: ScanCache | None = None,
 ) -> AnalysisReport:
     """Analyze the collection at *root* and return a detailed report."""
     _log = on_progress or (lambda _msg: None)
 
     _log("Scanning collection…")
-    collection = scan_collection(root, cfg, on_progress=on_progress, read_tags=False)
+    collection = scan_collection(root, cfg, on_progress=on_progress, read_tags=False, cache=cache)
     items = collection.items
     report = AnalysisReport()
     report.total_books = len(items)
@@ -169,6 +184,7 @@ def _check_empty_dirs(collection: CollectionScan, report: AnalysisReport) -> Non
                 message="Empty directory",
                 path=d,
                 suggestion="Remove empty directory",
+                fix=FixAction(kind="remove_dir", source=d),
             )
         )
 
@@ -212,6 +228,7 @@ def _check_naming_conventions(items: list[ScanResult], report: AnalysisReport) -
         folder_name = item.path.name
         expected = item.meta.dest_folder_name()
         if folder_name != expected and item.meta.title != "Unknown Title":
+            target = item.path.parent / expected
             report.issues.append(
                 Issue(
                     severity="info",
@@ -219,5 +236,57 @@ def _check_naming_conventions(items: list[ScanResult], report: AnalysisReport) -
                     message=f"Folder '{folder_name}' could be renamed",
                     path=item.path,
                     suggestion=f"Rename to '{expected}' for Audiobookshelf compatibility",
+                    fix=FixAction(kind="rename", source=item.path, target=target),
                 )
             )
+
+
+def apply_fixes(
+    report: AnalysisReport,
+    *,
+    dry_run: bool = False,
+    on_fix: Callable[[FixAction, bool, str], None] | None = None,
+) -> list[FixAction]:
+    """Apply all automatic fixes from *report*. Returns the list of applied actions."""
+    applied: list[FixAction] = []
+    _notify = on_fix or (lambda _action, _ok, _err: None)
+
+    for issue in report.issues:
+        if issue.fix is None:
+            continue
+        action = issue.fix
+        if dry_run:
+            _notify(action, True, "")
+            applied.append(action)
+            continue
+
+        ok, err = False, ""
+        if action.kind == "remove_dir":
+            ok, err = _apply_remove_dir(action)
+        elif action.kind == "rename":
+            ok, err = _apply_rename(action)
+        _notify(action, ok, err)
+        if ok:
+            applied.append(action)
+
+    return applied
+
+
+def _apply_remove_dir(action: FixAction) -> tuple[bool, str]:
+    try:
+        action.source.rmdir()
+        return True, ""
+    except OSError as exc:
+        return False, str(exc)
+
+
+def _apply_rename(action: FixAction) -> tuple[bool, str]:
+    if action.target is None:
+        return False, "no target path"
+    if action.target.exists():
+        return False, "target already exists"
+    try:
+        action.source.rename(action.target)
+        return True, ""
+    except OSError as exc:
+        return False, str(exc)

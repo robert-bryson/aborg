@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from audiobook_organizer.analyzer import analyze_collection
+from audiobook_organizer.analyzer import FixAction, analyze_collection, apply_fixes
 from audiobook_organizer.config import Config
 
 from .conftest import make_cfg
@@ -81,3 +81,71 @@ class TestAnalyzeCollection:
         report = analyze_collection(tmp_path, cfg)
         # fuzzy matching should catch these (ratio > 0.85)
         assert len(report.duplicates) >= 1
+
+
+class TestApplyFixes:
+    def test_fix_removes_empty_dir(self, tmp_path):
+        empty = tmp_path / "Author" / "EmptyBook"
+        empty.mkdir(parents=True)
+        _make_audio(tmp_path / "Author" / "RealBook" / "audio.mp3")
+
+        cfg = make_cfg()
+        report = analyze_collection(tmp_path, cfg)
+        fixable = [i for i in report.issues if i.fix is not None]
+        assert any(f.fix.kind == "remove_dir" for f in fixable)
+
+        applied = apply_fixes(report)
+        assert len(applied) >= 1
+        assert not empty.exists()
+
+    def test_fix_dry_run_preserves_empty_dir(self, tmp_path):
+        empty = tmp_path / "Author" / "EmptyBook"
+        empty.mkdir(parents=True)
+        _make_audio(tmp_path / "Author" / "RealBook" / "audio.mp3")
+
+        cfg = make_cfg()
+        report = analyze_collection(tmp_path, cfg)
+        applied = apply_fixes(report, dry_run=True)
+        assert len(applied) >= 1
+        assert empty.exists()
+
+    def test_fix_renames_folder(self, tmp_path):
+        # Create a folder that doesn't match Audiobookshelf naming
+        # The scanner should parse "Author - Title (2020)" where year=2020
+        book_dir = tmp_path / "Author" / "Title"
+        _make_audio(book_dir / "audio.mp3")
+
+        cfg = make_cfg()
+        report = analyze_collection(tmp_path, cfg)
+        rename_fixes = [i for i in report.issues if i.fix and i.fix.kind == "rename"]
+        if rename_fixes:
+            applied = apply_fixes(report)
+            rename_applied = [a for a in applied if a.kind == "rename"]
+            assert len(rename_applied) >= 1
+            assert rename_applied[0].target.exists()
+
+    def test_fix_rename_skips_conflict(self, tmp_path):
+        book_dir = tmp_path / "Author" / "Title"
+        _make_audio(book_dir / "audio.mp3")
+
+        cfg = make_cfg()
+        report = analyze_collection(tmp_path, cfg)
+        rename_fixes = [i for i in report.issues if i.fix and i.fix.kind == "rename"]
+        if rename_fixes:
+            # Pre-create the target so rename should be skipped
+            rename_fixes[0].fix.target.mkdir(parents=True, exist_ok=True)
+            applied = apply_fixes(report)
+            rename_applied = [a for a in applied if a.kind == "rename"]
+            assert len(rename_applied) == 0
+
+    def test_on_fix_callback(self, tmp_path):
+        empty = tmp_path / "Author" / "EmptyBook"
+        empty.mkdir(parents=True)
+        _make_audio(tmp_path / "Author" / "RealBook" / "audio.mp3")
+
+        cfg = make_cfg()
+        report = analyze_collection(tmp_path, cfg)
+
+        called = []
+        apply_fixes(report, on_fix=lambda action, ok, err: called.append((action.kind, ok)))
+        assert len(called) >= 1

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import yaml
 
@@ -31,6 +31,38 @@ class Config:
     libby_chapters: bool = False
     libby_keep_cover: bool = False
     libby_book_folder_format: str = ""
+
+    DEFAULT_PATTERNS: ClassVar[list[str]] = [
+        r"(?P<author>.+?) - (?P<series>.+?)\s*(?:Book|Vol\.?|Volume)\s*(?P<sequence>\d+)"
+        r"\s*-\s*(?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*\[(?P<narrator>.+?)\])?$",
+        r"(?P<author>.+?) - (?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*\[(?P<narrator>.+?)\])?$",
+        r"(?P<title>.+?) - (?P<author>.+?)(?:\s*\((?P<year>\d{4})\))?$",
+        r"(?P<author>[^_]+)_(?P<title>.+)$",
+    ]
+
+    @classmethod
+    def default(cls) -> Config:
+        """Return a Config with sensible defaults (paths left empty for user to fill in)."""
+        return cls(
+            archive_extensions=frozenset((".zip", ".rar", ".7z")),
+            audio_extensions=frozenset(
+                (".m4b", ".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wma", ".aac")
+            ),
+            companion_extensions=frozenset(
+                (".jpg", ".jpeg", ".png", ".pdf", ".epub", ".nfo", ".cue", ".txt", ".opf")
+            ),
+            auto_extract=True,
+            delete_after_extract=False,
+            filename_patterns=list(cls.DEFAULT_PATTERNS),
+            min_file_size=1_048_576,
+            move_log=DEFAULT_CONFIG_PATH.parent / "moves.log",
+            libby_settings=DEFAULT_CONFIG_PATH.parent / "libby",
+            libby_merge=False,
+            libby_merge_format="m4b",
+            libby_chapters=True,
+            libby_keep_cover=True,
+            libby_book_folder_format="%(Author)s - %(Title)s",
+        )
 
     @classmethod
     def load(cls, path: Path | None = None) -> Config:
