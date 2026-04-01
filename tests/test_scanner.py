@@ -29,7 +29,7 @@ class TestScanSources:
         _make_audio_file(src / "Author - Title.mp3")
 
         cfg = make_cfg(source_dirs=[src])
-        results = scan_sources(cfg)
+        results, _ = scan_sources(cfg)
         assert len(results) == 1
         assert results[0].kind == "audio_file"
         assert results[0].meta.author == "Author"
@@ -40,7 +40,7 @@ class TestScanSources:
         _make_audiobook_zip(src / "Author - Book.zip")
 
         cfg = make_cfg(source_dirs=[src])
-        results = scan_sources(cfg)
+        results, _ = scan_sources(cfg)
         assert len(results) == 1
         assert results[0].kind == "archive"
 
@@ -58,7 +58,7 @@ class TestScanSources:
             zf.writestr("readme.txt", b"x" * 60_000_000)
 
         cfg = make_cfg(source_dirs=[src])
-        results = scan_sources(cfg)
+        results, _ = scan_sources(cfg)
         assert len(results) == 0
 
     def test_finds_audio_directory(self, tmp_path):
@@ -68,7 +68,7 @@ class TestScanSources:
         _make_audio_file(book_dir / "track02.mp3")
 
         cfg = make_cfg(source_dirs=[src])
-        results = scan_sources(cfg)
+        results, _ = scan_sources(cfg)
         assert len(results) == 1
         assert results[0].kind == "audio_dir"
 
@@ -77,7 +77,7 @@ class TestScanSources:
         _make_audio_file(src / "tiny.mp3", size=50)
 
         cfg = make_cfg(source_dirs=[src])
-        results = scan_sources(cfg)
+        results, _ = scan_sources(cfg)
         assert len(results) == 0
 
     def test_skips_unknown_extensions(self, tmp_path):
@@ -85,20 +85,21 @@ class TestScanSources:
         _make_audio_file(src / "readme.txt", size=2_000_000)
 
         cfg = make_cfg(source_dirs=[src])
-        results = scan_sources(cfg)
+        results, _ = scan_sources(cfg)
         assert len(results) == 0
 
     def test_missing_source_dir(self, tmp_path):
         cfg = Config(source_dirs=[tmp_path / "nonexistent"])
-        results = scan_sources(cfg)
+        results, missing_dirs = scan_sources(cfg)
         assert results == []
+        assert missing_dirs == [tmp_path / "nonexistent"]
 
     def test_deduplicates(self, tmp_path):
         src = tmp_path / "downloads"
         _make_audio_file(src / "Author - Title.mp3")
 
         cfg = make_cfg(source_dirs=[src, src])
-        results = scan_sources(cfg)
+        results, _ = scan_sources(cfg)
         assert len(results) == 1
 
     def test_multiple_source_dirs(self, tmp_path):
@@ -108,7 +109,7 @@ class TestScanSources:
         _make_audio_file(s2 / "Author2 - Book2.mp3")
 
         cfg = make_cfg(source_dirs=[s1, s2])
-        results = scan_sources(cfg)
+        results, _ = scan_sources(cfg)
         assert len(results) == 2
 
     def test_deduplicates_windows_copy_suffix(self, tmp_path):
@@ -118,7 +119,7 @@ class TestScanSources:
         _make_audiobook_zip(src / "Author - Title(1).zip")
 
         cfg = make_cfg(source_dirs=[src])
-        results = scan_sources(cfg)
+        results, _ = scan_sources(cfg)
         assert len(results) == 1
         assert results[0].meta.title == "Title"
 
@@ -129,7 +130,7 @@ class TestScanSources:
         _make_audio_file(book_dir / "lesson01.mp3")
 
         cfg = make_cfg(source_dirs=[src])
-        results = scan_sources(cfg)
+        results, _ = scan_sources(cfg)
         assert len(results) == 0
 
 

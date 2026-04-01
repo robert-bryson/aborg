@@ -55,6 +55,7 @@ class ScanResult:
     size: int  # total bytes
     has_cover: bool = False
     file_count: int = 0
+    source_dir: Path | None = None
 
 
 @dataclass
@@ -72,16 +73,21 @@ def scan_sources(
     on_progress: ProgressCallback | None = None,
     on_hit: HitCallback | None = None,
     cache: ScanCache | None = None,
-) -> list[ScanResult]:
-    """Walk all configured source directories and return discovered audiobooks."""
+) -> tuple[list[ScanResult], list[Path]]:
+    """Walk all configured source directories and return discovered audiobooks.
+
+    Returns a tuple of (results, missing_dirs).
+    """
     results: list[ScanResult] = []
     seen: set[Path] = set()
     seen_titles: set[str] = set()  # deduplicate Windows "(1)" copies
     _log = on_progress or (lambda _msg: None)
     _hit = on_hit or (lambda _r: None)
 
+    missing_dirs: list[Path] = []
     for src_dir in cfg.source_dirs:
         if not src_dir.exists():
+            missing_dirs.append(src_dir)
             _log(f"[dim]Skipping missing dir: {src_dir}[/dim]")
             continue
         _log(f"Scanning [cyan]{src_dir}[/cyan] …")
@@ -105,6 +111,7 @@ def scan_sources(
                     cache.put(entry, result)
 
             if result:
+                result.source_dir = src_dir
                 dedup_key = f"{result.meta.author}::{result.meta.title}".lower()
                 if dedup_key in seen_titles:
                     _log(f"  [yellow]skip duplicate[/yellow] {entry.name}")
@@ -114,7 +121,7 @@ def scan_sources(
                 results.append(result)
                 _hit(result)
 
-    return results
+    return results, missing_dirs
 
 
 def _looks_like_junk(stem: str) -> bool:

@@ -164,6 +164,7 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, no_cache:
     count = 0
     new_count = 0
     exist_count = 0
+    current_source_dir: Path | None = None
 
     with console.status("[bold green]Scanning…[/bold green]", spinner="dots") as status:
 
@@ -171,8 +172,11 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, no_cache:
             status.update(f"[bold green]Scanning:[/bold green] {msg}")
 
         def _on_hit(result: object) -> None:
-            nonlocal count, new_count, exist_count
+            nonlocal count, new_count, exist_count, current_source_dir
             count += 1
+            if result.source_dir != current_source_dir:
+                current_source_dir = result.source_dir
+                console.print(f"\n[bold cyan]── {current_source_dir} ──[/bold cyan]")
             dest_full = cfg.destination / result.meta.dest_relative()
             exists = dest_full.exists()
             if exists:
@@ -193,7 +197,7 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, no_cache:
                 f"  [blue]→ {result.meta.dest_relative()}[/blue]"
             )
 
-        items = scan_sources(
+        items, missing_dirs = scan_sources(
             cfg,
             on_progress=_on_progress,
             on_hit=_on_hit,
@@ -203,8 +207,19 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, no_cache:
     if cache:
         cache.save()
 
+    if missing_dirs:
+        console.print()
+        for d in missing_dirs:
+            console.print(f"[red bold]⚠ Source directory not found:[/red bold] {d}")
+            hint = _check_wsl_mount(d)
+            if hint:
+                console.print(f"[yellow]  {hint}[/yellow]")
+
     if not items:
-        console.print("[yellow]No audiobook files found.[/yellow]")
+        if not missing_dirs:
+            console.print("[yellow]No audiobook files found.[/yellow]")
+        else:
+            console.print("[yellow]No audiobook files found (check source directories above).[/yellow]")
         return
 
     total_size = sum(i.size for i in items)
@@ -219,6 +234,8 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, no_cache:
     summary.add_row("Already in collection", f"[yellow]{exist_count}[/yellow]")
     summary.add_row("Authors", str(authors))
     summary.add_row("Total size", _human_size(total_size))
+    if missing_dirs:
+        summary.add_row("Missing source dirs", f"[red]{len(missing_dirs)}[/red]")
     console.print(summary)
 
     if table:
@@ -278,6 +295,7 @@ def org(
     count = 0
     new_count = 0
     exist_count = 0
+    current_source_dir: Path | None = None
 
     with console.status("[bold green]Scanning…[/bold green]", spinner="dots") as status:
 
@@ -285,8 +303,11 @@ def org(
             status.update(f"[bold green]Scanning:[/bold green] {msg}")
 
         def _org_hit(result: object) -> None:
-            nonlocal count, new_count, exist_count
+            nonlocal count, new_count, exist_count, current_source_dir
             count += 1
+            if result.source_dir != current_source_dir:
+                current_source_dir = result.source_dir
+                console.print(f"\n[bold cyan]── {current_source_dir} ──[/bold cyan]")
             dest_full = cfg.destination / result.meta.dest_relative()
             exists = dest_full.exists()
             if exists:
@@ -307,7 +328,7 @@ def org(
                 f"  [blue]→ {result.meta.dest_relative()}[/blue]"
             )
 
-        items = scan_sources(
+        items, missing_dirs = scan_sources(
             cfg,
             on_progress=_org_progress,
             on_hit=_org_hit,
@@ -317,8 +338,19 @@ def org(
     if cache:
         cache.save()
 
+    if missing_dirs:
+        console.print()
+        for d in missing_dirs:
+            console.print(f"[red bold]⚠ Source directory not found:[/red bold] {d}")
+            hint = _check_wsl_mount(d)
+            if hint:
+                console.print(f"[yellow]  {hint}[/yellow]")
+
     if not items:
-        console.print("[yellow]No audiobook files found.[/yellow]")
+        if not missing_dirs:
+            console.print("[yellow]No audiobook files found.[/yellow]")
+        else:
+            console.print("[yellow]No audiobook files found (check source directories above).[/yellow]")
         return
 
     parts = [f"Found [bold]{len(items)}[/bold] audiobook(s)"]

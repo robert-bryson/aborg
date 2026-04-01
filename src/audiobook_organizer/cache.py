@@ -44,7 +44,7 @@ class ScanCache:
         payload = {"version": CACHE_VERSION, "entries": self._entries}
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, separators=(",", ":")))
-        tmp.rename(self.path)
+        os.replace(tmp, self.path)
         self._dirty = False
 
     # ── lookup / store ───────────────────────────────────────────────
