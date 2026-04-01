@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from .cache import ScanCache
 
 from .config import Config
+from .parser import looks_like_author
 from .scanner import CollectionScan, ScanResult, scan_collection
 
 
@@ -69,12 +70,13 @@ def analyze_collection(
     *,
     on_progress: ProgressCallback | None = None,
     cache: ScanCache | None = None,
+    read_tags: bool = False,
 ) -> AnalysisReport:
     """Analyze the collection at *root* and return a detailed report."""
     _log = on_progress or (lambda _msg: None)
 
     _log("Scanning collection…")
-    collection = scan_collection(root, cfg, on_progress=on_progress, read_tags=False, cache=cache)
+    collection = scan_collection(root, cfg, on_progress=on_progress, read_tags=read_tags, cache=cache)
     items = collection.items
     report = AnalysisReport()
     report.total_books = len(items)
@@ -108,6 +110,9 @@ def analyze_collection(
     _check_naming_conventions(items, report)
     _log("Checking author name format consistency…")
     _check_author_name_format(items, root, cfg, report)
+    if read_tags:
+        _log("Checking metadata quality…")
+        _check_metadata_quality(items, report)
 
     return report
 
@@ -296,6 +301,67 @@ def _check_naming_conventions(items: list[ScanResult], report: AnalysisReport) -
                     path=item.path,
                     suggestion=f"Rename to '{expected}' for Audiobookshelf compatibility",
                     fix=FixAction(kind="rename", source=item.path, target=target),
+                )
+            )
+
+
+def _check_metadata_quality(items: list[ScanResult], report: AnalysisReport) -> None:
+    """Flag books whose audio-file tags look suspicious (requires read_tags)."""
+    for item in items:
+        if item.tag_meta is None:
+            continue
+        tag = item.tag_meta
+
+        # Suspicious artist tag (genre/category instead of a person name)
+        if tag.author != "Unknown Author" and not looks_like_author(tag.author):
+            report.issues.append(
+                Issue(
+                    severity="warning",
+                    category="metadata",
+                    message=(
+                        f"Suspicious artist tag '{tag.author}' for "
+                        f"'{item.meta.title}'"
+                    ),
+                    path=item.path,
+                    suggestion=(
+                        "The artist tag doesn't look like an author name. "
+                        "Consider updating the audio file tags"
+                    ),
+                )
+            )
+
+        # Tag author vs folder author mismatch
+        if (
+            tag.author != "Unknown Author"
+            and item.meta.author != "Unknown Author"
+            and tag.author.lower() != item.meta.author.lower()
+            and looks_like_author(tag.author)
+        ):
+            report.issues.append(
+                Issue(
+                    severity="info",
+                    category="metadata",
+                    message=(
+                        f"Tag author '{tag.author}' differs from folder "
+                        f"author '{item.meta.author}'"
+                    ),
+                    path=item.path,
+                    suggestion="Verify which author name is correct",
+                )
+            )
+
+        # Title looks like it contains track numbering
+        if tag.title and tag.title != "Unknown Title" and re.match(r"^\d+\s*[-.:]+\s*", tag.title):
+            report.issues.append(
+                Issue(
+                    severity="info",
+                    category="metadata",
+                    message=(
+                        f"Title tag '{tag.title}' starts with numbering "
+                        f"for '{item.meta.title}'"
+                    ),
+                    path=item.path,
+                    suggestion="The title tag may contain track/disc numbering",
                 )
             )
 

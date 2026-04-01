@@ -4,12 +4,15 @@ from pathlib import Path
 
 from audiobook_organizer.analyzer import (
     FixAction,
+    _check_metadata_quality,
     _flip_author_name,
     _is_last_first,
     analyze_collection,
     apply_fixes,
 )
 from audiobook_organizer.config import Config
+from audiobook_organizer.parser import AudiobookMeta
+from audiobook_organizer.scanner import ScanResult
 
 from .conftest import make_cfg
 
@@ -228,3 +231,91 @@ class TestAuthorNameFormat:
         assert len(rename_applied) == 1
         assert (tmp_path / "Millard, Candice").exists()
         assert not (tmp_path / "Candice Millard").exists()
+
+
+class TestMetadataQuality:
+    def _make_report(self):
+        from audiobook_organizer.analyzer import AnalysisReport
+        return AnalysisReport()
+
+    def test_flags_suspicious_artist(self):
+        report = self._make_report()
+        items = [
+            ScanResult(
+                path=Path("/collection/Author/Book"),
+                kind="audio_dir",
+                meta=AudiobookMeta(author="Author", title="Book"),
+                size=1000,
+                tag_meta=AudiobookMeta(
+                    author="Top 100 Sci-Fi Books",
+                    title="Foundation",
+                ),
+            ),
+        ]
+        _check_metadata_quality(items, report)
+        assert any("Suspicious artist" in i.message for i in report.issues)
+
+    def test_flags_tag_author_mismatch(self):
+        report = self._make_report()
+        items = [
+            ScanResult(
+                path=Path("/collection/Isaac Asimov/Foundation"),
+                kind="audio_dir",
+                meta=AudiobookMeta(author="Isaac Asimov", title="Foundation"),
+                size=1000,
+                tag_meta=AudiobookMeta(
+                    author="Asimov, Isaac",
+                    title="Foundation",
+                ),
+            ),
+        ]
+        _check_metadata_quality(items, report)
+        mismatch = [i for i in report.issues if "differs from folder" in i.message]
+        assert len(mismatch) == 1
+
+    def test_flags_title_with_numbering(self):
+        report = self._make_report()
+        items = [
+            ScanResult(
+                path=Path("/collection/Author/Book"),
+                kind="audio_dir",
+                meta=AudiobookMeta(author="Author", title="Book"),
+                size=1000,
+                tag_meta=AudiobookMeta(
+                    title="03 - Foundation",
+                ),
+            ),
+        ]
+        _check_metadata_quality(items, report)
+        assert any("numbering" in i.message for i in report.issues)
+
+    def test_no_issues_for_clean_tags(self):
+        report = self._make_report()
+        items = [
+            ScanResult(
+                path=Path("/collection/Isaac Asimov/Foundation"),
+                kind="audio_dir",
+                meta=AudiobookMeta(author="Isaac Asimov", title="Foundation"),
+                size=1000,
+                tag_meta=AudiobookMeta(
+                    author="Isaac Asimov",
+                    title="Foundation",
+                ),
+            ),
+        ]
+        _check_metadata_quality(items, report)
+        assert len(report.issues) == 0
+
+    def test_skips_items_without_tag_meta(self):
+        report = self._make_report()
+        items = [
+            ScanResult(
+                path=Path("/collection/Author/Book"),
+                kind="audio_dir",
+                meta=AudiobookMeta(author="Author", title="Book"),
+                size=1000,
+                tag_meta=None,
+            ),
+        ]
+        _check_metadata_quality(items, report)
+        assert len(report.issues) == 0

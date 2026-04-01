@@ -56,6 +56,7 @@ class ScanResult:
     has_cover: bool = False
     file_count: int = 0
     source_dir: Path | None = None
+    tag_meta: AudiobookMeta | None = None  # raw tag-derived metadata (before merge)
 
 
 @dataclass
@@ -168,7 +169,7 @@ def _check_file(path: Path, cfg: Config) -> ScanResult | None:
         tag_meta = parse_audio_tags(path)
         meta = merge_meta(tag_meta, file_meta)
         meta.source_path = path
-        return ScanResult(path=path, kind="audio_file", meta=meta, size=size)
+        return ScanResult(path=path, kind="audio_file", meta=meta, size=size, tag_meta=tag_meta)
 
     return None
 
@@ -197,7 +198,10 @@ def _check_dir(path: Path, cfg: Config) -> ScanResult | None:
         return None
     meta.source_path = path
 
-    return ScanResult(path=path, kind="audio_dir", meta=meta, size=total_size)
+    return ScanResult(
+        path=path, kind="audio_dir", meta=meta, size=total_size,
+        tag_meta=first_audio_meta if audio_files else None,
+    )
 
 
 def scan_collection(
@@ -393,6 +397,7 @@ def _build_scan_result(
         tag_meta = parse_audio_tags(Path(info.audio_files[0][0]))
         meta = merge_meta(tag_meta, dir_meta)
     else:
+        tag_meta = None
         meta = dir_meta
 
     if author:
@@ -408,4 +413,5 @@ def _build_scan_result(
         size=info.total_size,
         has_cover=info.has_cover,
         file_count=info.audio_count,
+        tag_meta=tag_meta,
     )

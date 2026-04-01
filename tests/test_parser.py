@@ -1,14 +1,20 @@
 """Tests for audiobook_organizer.parser — filename parsing and metadata."""
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from audiobook_organizer.parser import (
     AudiobookMeta,
+    _clean_tag_title,
     _sanitize,
+    looks_like_author,
     merge_meta,
+    normalize_path_name,
+    parse_audio_tags,
     parse_filename,
+    path_parent_name,
 )
 
 # Patterns used in tests (same as the defaults shipped in config.yaml)
@@ -169,3 +175,163 @@ class TestMergeMeta:
         b = AudiobookMeta()
         assert merge_meta(a, b).source_path == p
         assert merge_meta(b, a).source_path == p
+
+
+# ── looks_like_author ────────────────────────────────────────────────────
+
+
+class TestLooksLikeAuthor:
+    def test_real_authors(self):
+        assert looks_like_author("Isaac Asimov") is True
+        assert looks_like_author("Asimov, Isaac") is True
+        assert looks_like_author("J.R.R. Tolkien") is True
+        assert looks_like_author("Brandon Sanderson") is True
+
+    def test_category_labels(self):
+        assert looks_like_author("Top 100 Sci-Fi Books") is False
+        assert looks_like_author("Various Artists") is False
+        assert looks_like_author("Audiobooks Collection") is False
+        assert looks_like_author("Best Fantasy Classics") is False
+
+    def test_numbered_strings(self):
+        assert looks_like_author("03 - Book 1 - Foundation") is False
+
+    def test_empty_and_default(self):
+        assert looks_like_author("") is False
+        assert looks_like_author("Unknown Author") is False
+
+    def test_single_word_author(self):
+        # Single names like "Plato" should pass
+        assert looks_like_author("Plato") is True
+        assert looks_like_author("Homer") is True
+
+    def test_single_bad_word(self):
+        assert looks_like_author("Audiobooks") is False
+        assert looks_like_author("Unknown") is False
+
+
+# ── normalize_path_name ──────────────────────────────────────────────────
+
+
+class TestNormalizePathName:
+    def test_windows_unc_path(self):
+        name = normalize_path_name(
+            r"\\nas\drive\media\audiobooks-test\Asimov, Issac\I, Robot - Isaac Asimov - 1950"
+        )
+        assert name == "I, Robot - Isaac Asimov - 1950"
+
+    def test_windows_path_with_audio_extension(self):
+        name = normalize_path_name(
+            r"\\nas\drive\media\audiobooks-test\Folder\02 02 - I, Robot.mp3"
+        )
+        assert name == "02 02 - I, Robot"
+
+    def test_unix_path(self):
+        assert normalize_path_name("/home/user/downloads/Author - Title") == "Author - Title"
+
+    def test_unix_path_with_extension(self):
+        assert normalize_path_name("/home/user/Author - Title.m4b") == "Author - Title"
+
+    def test_plain_string(self):
+        assert normalize_path_name("Author - Title") == "Author - Title"
+
+    def test_trailing_slash_stripped(self):
+        assert normalize_path_name("/foo/bar/") == "bar"
+        assert normalize_path_name("\\\\server\\share\\folder\\") == "folder"
+
+    def test_non_audio_extension_kept(self):
+        assert normalize_path_name("/foo/readme.txt") == "readme.txt"
+
+
+# ── path_parent_name ─────────────────────────────────────────────────────
+
+
+class TestPathParentName:
+    def test_windows_path(self):
+        parent = path_parent_name(
+            r"\\nas\drive\media\audiobooks-test\Asimov, Issac\I, Robot - Isaac Asimov - 1950"
+        )
+        assert parent == "Asimov, Issac"
+
+    def test_unix_path(self):
+        assert path_parent_name("/home/user/Author/Title") == "Author"
+
+    def test_single_component(self):
+        assert path_parent_name("JustAName") is None
+
+    def test_two_components(self):
+        assert path_parent_name("parent/child") == "parent"
+
+
+# ── _clean_tag_title ─────────────────────────────────────────────────────
+
+
+class TestCleanTagTitle:
+    def test_strips_leading_number(self):
+        assert _clean_tag_title("03 - Book 1 - Foundation") == "Book 1 - Foundation"
+
+    def test_strips_dotted_number(self):
+        assert _clean_tag_title("01. Chapter One") == "Chapter One"
+
+    def test_leaves_clean_title(self):
+        assert _clean_tag_title("Foundation") == "Foundation"
+
+    def test_unknown_title_passthrough(self):
+        assert _clean_tag_title("Unknown Title") == "Unknown Title"
+
+    def test_empty_passthrough(self):
+        assert _clean_tag_title("") == ""
+
+
+# ── parse_audio_tags (with mocked Mutagen) ───────────────────────────────
+
+
+class TestParseAudioTags:
+    def _mock_tags(self, tags: dict) -> MagicMock:
+        """Create a mock Mutagen file with the given easy tags."""
+        mock_audio = MagicMock()
+        mock_audio.tags = {k: [v] for k, v in tags.items()}
+        return mock_audio
+
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_good_metadata(self, mock_mutagen):
+        mock_mutagen.return_value = self._mock_tags({
+            "artist": "Isaac Asimov",
+            "album": "Foundation",
+            "date": "1951",
+            "composer": "Scott Brick",
+        })
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+        assert meta.author == "Isaac Asimov"
+        assert meta.title == "Foundation"
+        assert meta.year == "1951"
+        assert meta.narrator == "Scott Brick"
+
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_rejects_category_artist(self, mock_mutagen):
+        mock_mutagen.return_value = self._mock_tags({
+            "artist": "Top 100 Sci-Fi Books",
+            "album": "03 - Book 1 - Foundation - Isaac Asimov",
+        })
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+        # Should NOT use the garbage artist
+        assert meta.author == "Unknown Author"
+        # Title should be cleaned (leading number stripped)
+        assert meta.title == "Book 1 - Foundation - Isaac Asimov"
+
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_prefers_albumartist_over_bad_artist(self, mock_mutagen):
+        mock_mutagen.return_value = self._mock_tags({
+            "artist": "Various Artists",
+            "albumartist": "Isaac Asimov",
+            "album": "Foundation",
+        })
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+        assert meta.author == "Isaac Asimov"
+
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_no_tags(self, mock_mutagen):
+        mock_mutagen.return_value = None
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+        assert meta.author == "Unknown Author"
+        assert meta.title == "Unknown Title"

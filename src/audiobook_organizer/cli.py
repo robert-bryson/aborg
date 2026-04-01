@@ -24,7 +24,7 @@ from .fetcher import (
     list_loans,
 )
 from .organizer import organize, undo_last
-from .parser import parse_filename
+from .parser import AudiobookMeta, looks_like_author, merge_meta, normalize_path_name, parse_audio_tags, parse_filename, path_parent_name
 from .scanner import scan_collection, scan_sources
 
 console = Console()
@@ -639,9 +639,16 @@ def fetch(
 @click.option("--dry-run", is_flag=True, help="Show what --fix would do without making changes.")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt when using --fix.")
 @click.option("--no-cache", is_flag=True, help="Ignore cached results and rescan everything.")
+@click.option("--check-tags", is_flag=True, help="Read audio tags and check metadata quality (slower).")
 @click.pass_context
 def analyze(
-    ctx: click.Context, path: str | None, fix: bool, dry_run: bool, yes: bool, no_cache: bool,
+    ctx: click.Context,
+    path: str | None,
+    fix: bool,
+    dry_run: bool,
+    yes: bool,
+    no_cache: bool,
+    check_tags: bool,
 ) -> None:
     """Analyze an existing audiobook collection and suggest improvements."""
     cfg = _require_cfg(ctx)
@@ -660,7 +667,9 @@ def analyze(
         def _on_progress(msg: str) -> None:
             status.update(f"[bold green]Analyzing:[/bold green] {msg}")
 
-        report = analyze_collection(root, cfg, on_progress=_on_progress, cache=cache)
+        report = analyze_collection(
+            root, cfg, on_progress=_on_progress, cache=cache, read_tags=check_tags,
+        )
 
     if cache:
         cache.save()
@@ -772,21 +781,92 @@ def analyze(
 @click.argument("filename")
 @click.pass_context
 def parse(ctx: click.Context, filename: str) -> None:
-    """Parse a filename and show what metadata would be extracted."""
-    cfg = _require_cfg(ctx)
-    meta = parse_filename(filename, cfg.filename_patterns)
+    """Parse a filename or path and show what metadata would be extracted.
 
-    table = Table(title=f"Parsed: {filename}", show_header=False)
+    Accepts a plain filename, a full file path, or a directory path.
+    When given an actual audio file, also reads tags and shows the merged
+    result — the same logic used by ``aborg scan``.
+    """
+    cfg = _require_cfg(ctx)
+
+    # ── Normalise the input ──────────────────────────────────────────
+    name = normalize_path_name(filename)
+    console.print(f"[dim]Parsed name:[/dim]  {name}")
+
+    # ── Parse the folder/file name (same as scanner does) ────────────
+    name_meta = parse_filename(name, cfg.filename_patterns)
+
+    # ── Try ancestors for supplementary author context ────────────────
+    normalized = filename.replace("\\", "/").rstrip("/")
+    parts = [p for p in normalized.split("/") if p]
+
+    parent = parts[-2] if len(parts) >= 2 else None
+    parent_meta = AudiobookMeta()
+    if parent:
+        parent_parsed = parse_filename(parent, cfg.filename_patterns)
+        if parent_parsed.author != "Unknown Author":
+            parent_meta = parent_parsed
+        elif looks_like_author(parent):
+            parent_meta.author = parent
+
+    # ── If it's an actual audio file, read tags (same as scanner) ────
+    path = Path(filename)
+    tag_meta = AudiobookMeta()
+    has_tags = False
+    if path.is_file() and path.suffix.lower() in cfg.audio_extensions:
+        tag_meta = parse_audio_tags(path)
+        has_tags = True
+
+    # ── Merge sources (same priority as scanner: tags > name > parent)
+    merged = merge_meta(tag_meta, name_meta, parent_meta)
+
+    # If merged author is obviously wrong, search path ancestors for a
+    # clean author name (skip "Author - Title" style components).
+    if not looks_like_author(merged.author) or merged.author == "Unknown Author":
+        for comp in reversed(parts[:-1]):
+            if " - " in comp:
+                continue
+            if looks_like_author(comp):
+                merged.author = comp
+                break
+
+    # ── Display individual sources and merged result ─────────────────
+    def _meta_row(label: str, m: AudiobookMeta) -> None:
+        parts = []
+        if m.author != "Unknown Author":
+            parts.append(f"author=[bold]{m.author}[/bold]")
+        if m.title != "Unknown Title":
+            parts.append(f"title={m.title}")
+        if m.series:
+            parts.append(f"series={m.series}")
+        if m.sequence:
+            parts.append(f"seq={m.sequence}")
+        if m.year:
+            parts.append(f"year={m.year}")
+        if m.narrator:
+            parts.append(f"narrator={m.narrator}")
+        console.print(f"  [dim]{label}:[/dim] {', '.join(parts) if parts else '[dim]—[/dim]'}")
+
+    console.print()
+    console.print("[bold]Sources:[/bold]")
+    _meta_row("Name   ", name_meta)
+    if parent:
+        _meta_row("Parent ", parent_meta)
+    if has_tags:
+        _meta_row("Tags   ", tag_meta)
+
+    console.print()
+    table = Table(title="Merged result", show_header=False)
     table.add_column("Field", style="bold")
     table.add_column("Value")
-    table.add_row("Author", meta.author)
-    table.add_row("Title", meta.title)
-    table.add_row("Series", meta.series or "—")
-    table.add_row("Sequence", meta.sequence or "—")
-    table.add_row("Year", meta.year or "—")
-    table.add_row("Narrator", meta.narrator or "—")
-    table.add_row("Dest folder", meta.dest_folder_name())
-    table.add_row("Dest path", str(meta.dest_relative()))
+    table.add_row("Author", merged.author)
+    table.add_row("Title", merged.title)
+    table.add_row("Series", merged.series or "—")
+    table.add_row("Sequence", merged.sequence or "—")
+    table.add_row("Year", merged.year or "—")
+    table.add_row("Narrator", merged.narrator or "—")
+    table.add_row("Dest folder", merged.dest_folder_name())
+    table.add_row("Dest path", str(merged.dest_relative()))
     console.print(table)
 
 

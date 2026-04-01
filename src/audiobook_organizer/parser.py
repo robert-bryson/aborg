@@ -9,6 +9,19 @@ from pathlib import Path
 from mutagen import File as MutagenFile
 from mutagen import MutagenError
 
+# Words that suggest an "artist" tag is a category/genre, not a person.
+_NON_AUTHOR_WORDS = frozenset({
+    "top", "best", "greatest", "100", "sci-fi", "scifi", "fantasy", "fiction",
+    "books", "audiobooks", "collection", "series", "classics", "library",
+    "various", "artists", "unknown", "anthology", "assorted", "compilation",
+    "audio", "unabridged", "abridged",
+})
+
+# Audio extensions used for path normalisation.
+_AUDIO_EXTS = frozenset({
+    ".m4b", ".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wma", ".aac",
+})
+
 
 @dataclass
 class AudiobookMeta:
@@ -57,6 +70,49 @@ def _sanitize(name: str) -> str:
     return name or "Unknown"
 
 
+def looks_like_author(name: str) -> bool:
+    """Heuristic: return *True* if *name* looks like a person, not a category."""
+    if not name or name == "Unknown Author":
+        return False
+    words = name.lower().split()
+    if not words:
+        return False
+    bad = sum(1 for w in words if w in _NON_AUTHOR_WORDS)
+    if bad >= 2:
+        return False
+    if len(words) <= 3 and bad >= 1:
+        return False
+    # Leading digit → probably track/disc numbering, not a name
+    if words[0].isdigit():
+        return False
+    return True
+
+
+def normalize_path_name(input_str: str) -> str:
+    """Extract the last meaningful name from a path string.
+
+    Handles both Windows (backslash / UNC) and Unix paths.
+    Strips recognised audio file extensions.
+    """
+    # Normalise to forward slashes
+    normalized = input_str.replace("\\", "/").rstrip("/")
+    name = normalized.rsplit("/", 1)[-1] if "/" in normalized else normalized
+    # Strip audio extension
+    dot = name.rfind(".")
+    if dot > 0 and name[dot:].lower() in _AUDIO_EXTS:
+        name = name[:dot]
+    return name.strip()
+
+
+def path_parent_name(input_str: str) -> str | None:
+    """Return the parent directory name from a path, or *None*."""
+    normalized = input_str.replace("\\", "/").rstrip("/")
+    parts = [p for p in normalized.split("/") if p]
+    if len(parts) >= 2:
+        return parts[-2]
+    return None
+
+
 def parse_filename(name: str, patterns: list[str] | None = None) -> AudiobookMeta:
     """Attempt to parse audiobook metadata from a filename (without extension).
 
@@ -81,7 +137,11 @@ def parse_filename(name: str, patterns: list[str] | None = None) -> AudiobookMet
 
 
 def parse_audio_tags(path: Path) -> AudiobookMeta:
-    """Read ID3/audio metadata from an audio file using Mutagen."""
+    """Read ID3/audio metadata from an audio file using Mutagen.
+
+    Validates the artist tag to avoid using genre/category labels
+    (e.g. "Top 100 Sci-Fi Books") as the author.
+    """
     meta = AudiobookMeta(source_path=path)
     try:
         audio = MutagenFile(path, easy=True)
@@ -99,14 +159,30 @@ def parse_audio_tags(path: Path) -> AudiobookMeta:
                 return str(vals[0]).strip()
         return None
 
-    meta.author = _get("artist", "albumartist", "album_artist") or meta.author
-    meta.title = _get("album", "title") or meta.title
+    # Author — try each candidate, keep the first that looks like a person.
+    for candidate in (_get("albumartist", "album_artist"), _get("artist")):
+        if candidate and looks_like_author(candidate):
+            meta.author = candidate
+            break
+
+    raw_title = _get("album", "title") or meta.title
+    meta.title = _clean_tag_title(raw_title)
+
     meta.year = _get("date", "year") or meta.year
     meta.narrator = _get("composer") or meta.narrator
     meta.series = _get("series", "mvnm", "grouping") or meta.series
     meta.sequence = _get("series-part", "mvin") or meta.sequence
 
     return meta
+
+
+def _clean_tag_title(title: str) -> str:
+    """Strip common album-tag noise such as leading disc/track numbers."""
+    if not title or title == "Unknown Title":
+        return title
+    # "03 - Book 1 - ..." → "Book 1 - ..."
+    cleaned = re.sub(r"^\d+\s*[-.:]+\s*", "", title)
+    return cleaned.strip() or title
 
 
 def merge_meta(*sources: AudiobookMeta) -> AudiobookMeta:

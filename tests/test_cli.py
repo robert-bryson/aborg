@@ -27,6 +27,27 @@ class TestCLI:
         assert "Brandon Sanderson" in result.output
         assert "The Final Empire" in result.output
 
+    def test_parse_handles_full_path(self):
+        """Parse should extract the folder name from a full path."""
+        result = CliRunner().invoke(
+            cli,
+            ["parse", r"\\nas\drive\media\audiobooks\Asimov, Isaac\I, Robot - Isaac Asimov - 1950"],
+        )
+        assert result.exit_code == 0
+        # Should show the extracted name, not the full path as author
+        assert "I, Robot - Isaac Asimov - 1950" in result.output
+        # Parent folder "Asimov, Isaac" should be shown as a source
+        assert "Asimov, Isaac" in result.output
+
+    def test_parse_shows_sources(self):
+        """Parse should display the Sources section."""
+        result = CliRunner().invoke(
+            cli, ["parse", "Author - Title"]
+        )
+        assert result.exit_code == 0
+        assert "Sources" in result.output
+        assert "Merged result" in result.output
+
     def test_config_show(self):
         result = CliRunner().invoke(cli, ["config", "--show"])
         assert result.exit_code == 0
