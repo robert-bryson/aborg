@@ -37,6 +37,7 @@ class AudiobookMeta:
     sequence: str | None = None
     year: str | None = None
     narrator: str | None = None
+    translator: str | None = None
     source_path: Path | None = None
 
     def dest_folder_name(self) -> str:
@@ -458,6 +459,38 @@ def strip_author_from_title(title: str, known_author: str) -> str:
     return stripped if stripped != title else title
 
 
+def _read_translator(path: Path) -> str | None:
+    """Try to read a translator name from non-easy-mode audio tags.
+
+    Checks ID3 TIPL (Involved People List) for a "translator" entry and
+    Vorbis/FLAC TRANSLATOR comments.  Returns *None* if nothing found.
+    """
+    try:
+        audio = MutagenFile(path)
+    except MutagenError:
+        return None
+    if audio is None or audio.tags is None:
+        return None
+    tags = audio.tags
+
+    # ID3v2: TIPL frame stores key/value pairs like ["translator", "Name"]
+    tipl = tags.get("TIPL")
+    if tipl and hasattr(tipl, "people"):
+        for role, name in tipl.people:
+            if role.lower() == "translator" and name and name.strip():
+                return name.strip()
+
+    # Vorbis / FLAC / OGG: check TRANSLATOR comment
+    for key in ("translator", "TRANSLATOR"):
+        vals = tags.get(key)
+        if vals:
+            val = str(vals[0]).strip() if isinstance(vals, list) else str(vals).strip()
+            if val:
+                return val
+
+    return None
+
+
 def parse_audio_tags(path: Path) -> AudiobookMeta:
     """Read ID3/audio metadata from an audio file using Mutagen.
 
@@ -495,6 +528,9 @@ def parse_audio_tags(path: Path) -> AudiobookMeta:
     meta.series = _get("series", "mvnm", "grouping") or meta.series
     meta.sequence = _get("series-part", "mvin") or meta.sequence
 
+    # Try to read translator from non-easy-mode tags.
+    meta.translator = _read_translator(path) or meta.translator
+
     return meta
 
 
@@ -521,23 +557,30 @@ def _clean_tag_title(title: str) -> str:
 
 
 def strip_narrator_from_author(meta: AudiobookMeta) -> AudiobookMeta:
-    """If the narrator appears as one of the names in a multi-author field, strip it.
+    """Strip narrator and translator names from a multi-author field.
 
-    Many audiobook files encode ``"Author, Narrator"`` in the artist tag.
-    When we also know the narrator (from the composer tag or folder braces),
-    we can detect and remove it from the author string.
+    Many audiobook files encode ``"Author, Narrator"`` or
+    ``"Translator, Author"`` in the artist tag.  When we know the
+    narrator or translator from another source, remove them so only
+    actual authors remain.
     """
-    if not meta.narrator or not _is_multi_author(meta.author):
+    if not _is_multi_author(meta.author):
         return meta
-    narrator_low = meta.narrator.strip().lower()
+    names_to_strip: list[str] = []
+    if meta.narrator:
+        names_to_strip.append(meta.narrator.strip().lower())
+    if meta.translator:
+        names_to_strip.append(meta.translator.strip().lower())
+    if not names_to_strip:
+        return meta
     authors = _split_authors(meta.author)
     kept = []
     for a in authors:
         a_low = a.lower()
-        # Check exact match or fuzzy match (handle minor differences)
-        if a_low == narrator_low:
-            continue
-        if SequenceMatcher(None, a_low, narrator_low).ratio() > 0.85:
+        if any(
+            a_low == n or SequenceMatcher(None, a_low, n).ratio() > 0.85
+            for n in names_to_strip
+        ):
             continue
         kept.append(a)
     if kept and len(kept) < len(authors):
@@ -561,6 +604,8 @@ def merge_meta(*sources: AudiobookMeta) -> AudiobookMeta:
             result.year = src.year
         if result.narrator is None and src.narrator:
             result.narrator = src.narrator
+        if result.translator is None and src.translator:
+            result.translator = src.translator
         if result.source_path is None and src.source_path:
             result.source_path = src.source_path
     strip_narrator_from_author(result)
@@ -594,6 +639,8 @@ def _parse_metadata_dict(data: dict, source_path: Path | None = None) -> Audiobo
                 meta.author = name
             elif role == "nrt" and meta.narrator is None:
                 meta.narrator = name
+            elif role == "trl" and meta.translator is None:
+                meta.translator = name
 
     return meta
 

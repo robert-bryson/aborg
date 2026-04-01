@@ -217,6 +217,21 @@ class TestMergeMeta:
         merged = merge_meta(tag)
         assert merged.author == "Bob Woodward, Carl Bernstein"
 
+    def test_strips_translator_from_multi_author(self):
+        """When translator matches one name in multi-author field."""
+        tag = AudiobookMeta(
+            author="Deepa Bhasthi, Banu Mushtaq", translator="Deepa Bhasthi"
+        )
+        merged = merge_meta(tag)
+        assert merged.author == "Banu Mushtaq"
+        assert merged.translator == "Deepa Bhasthi"
+
+    def test_merges_translator_field(self):
+        a = AudiobookMeta(translator="Deepa Bhasthi")
+        b = AudiobookMeta(translator="Someone Else")
+        merged = merge_meta(a, b)
+        assert merged.translator == "Deepa Bhasthi"
+
 
 # ── strip_narrator_from_author ───────────────────────────────────────────
 
@@ -256,6 +271,27 @@ class TestStripNarratorFromAuthor:
         meta = AudiobookMeta(author="Stephen King & Ray Porter", narrator="Ray Porter")
         strip_narrator_from_author(meta)
         assert meta.author == "Stephen King"
+
+    def test_translator_stripped(self):
+        meta = AudiobookMeta(
+            author="Deepa Bhasthi, Banu Mushtaq", translator="Deepa Bhasthi"
+        )
+        strip_narrator_from_author(meta)
+        assert meta.author == "Banu Mushtaq"
+
+    def test_both_narrator_and_translator_stripped(self):
+        meta = AudiobookMeta(
+            author="Translator Name, Real Author, Narrator Name",
+            narrator="Narrator Name",
+            translator="Translator Name",
+        )
+        strip_narrator_from_author(meta)
+        assert meta.author == "Real Author"
+
+    def test_no_translator_no_narrator_noop(self):
+        meta = AudiobookMeta(author="Alice Smith, Bob Jones")
+        strip_narrator_from_author(meta)
+        assert meta.author == "Alice Smith, Bob Jones"
 
 
 # ── looks_like_author ────────────────────────────────────────────────────
@@ -1034,7 +1070,7 @@ class TestParseMetadataJson:
         assert parse_metadata_json(tmp_path) is None
 
     def test_creator_with_unknown_roles_ignored(self, tmp_path):
-        """Only aut and nrt roles are used."""
+        """Only aut, nrt, and trl roles are used."""
         meta_dir = tmp_path / "metadata"
         meta_dir.mkdir()
         (meta_dir / "metadata.json").write_text(json.dumps({
@@ -1048,6 +1084,22 @@ class TestParseMetadataJson:
         assert meta is not None
         assert meta.author == "Real Author"
         assert meta.narrator is None
+
+    def test_translator_role_extracted(self, tmp_path):
+        """Extracts translator from 'trl' role."""
+        meta_dir = tmp_path / "metadata"
+        meta_dir.mkdir()
+        (meta_dir / "metadata.json").write_text(json.dumps({
+            "title": "Heart Lamp",
+            "creator": [
+                {"name": "Banu Mushtaq", "role": "aut"},
+                {"name": "Deepa Bhasthi", "role": "trl"},
+            ],
+        }))
+        meta = parse_metadata_json(tmp_path)
+        assert meta is not None
+        assert meta.author == "Banu Mushtaq"
+        assert meta.translator == "Deepa Bhasthi"
 
 
 # ── parse_metadata_json_from_zip ─────────────────────────────────────────
