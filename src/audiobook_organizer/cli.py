@@ -11,7 +11,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from .analyzer import FixAction, analyze_collection, apply_fixes
+from .analyzer import AnalysisReport, FixAction, analyze_collection, apply_fixes
 from .cache import ScanCache
 from .config import DEFAULT_CONFIG_PATH, Config
 from .fetcher import (
@@ -46,6 +46,35 @@ def _human_size(size: int) -> str:
             return f"{size:.1f} {unit}"
         size /= 1024  # type: ignore[assignment]
     return f"{size:.1f} PB"
+
+
+def _print_books_table(report: AnalysisReport) -> None:
+    """Print a table of all books in the collection."""
+    if not report.items:
+        return
+    tbl = Table(title="Library")
+    tbl.add_column("#", style="dim", width=3)
+    tbl.add_column("Author", style="green", no_wrap=True)
+    tbl.add_column("Title", style="bold")
+    tbl.add_column("Series", no_wrap=True)
+    tbl.add_column("Year", no_wrap=True)
+    tbl.add_column("Size", justify="right", no_wrap=True)
+    tbl.add_column("Files", justify="right", width=5)
+
+    sorted_items = sorted(report.items, key=lambda x: (x.meta.author.lower(), x.meta.title.lower()))
+    for i, item in enumerate(sorted_items, 1):
+        tbl.add_row(
+            str(i),
+            item.meta.author,
+            item.meta.title,
+            f"{item.meta.series} #{item.meta.sequence}" if item.meta.series else "",
+            item.meta.year or "",
+            _human_size(item.size),
+            str(item.file_count) if item.file_count else "",
+        )
+
+    console.print(tbl)
+    console.print()
 
 
 def _is_wsl() -> bool:
@@ -649,7 +678,7 @@ def fetch(
 @click.option("--dry-run", is_flag=True, help="Show what --fix would do without making changes.")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt when using --fix.")
 @click.option("--cache", is_flag=True, help="Use cached results from previous scans.")
-@click.option("--check-tags", is_flag=True, help="Read audio tags and check metadata quality (slower).")
+@click.option("--check-tags/--no-check-tags", default=True, help="Read audio tags and check metadata quality (disable with --no-check-tags for speed).")
 @click.pass_context
 def analyze(
     ctx: click.Context,
@@ -696,12 +725,14 @@ def analyze(
 
     if not report.issues:
         console.print()
+        _print_books_table(report)
         console.print(summary)
         console.print("\n[green]No issues found — collection looks great![/green]")
         return
 
     # Issues table
     console.print()
+    _print_books_table(report)
     issues_table = Table(title="Issues")
     issues_table.add_column("Sev", width=7)
     issues_table.add_column("Category", width=12)

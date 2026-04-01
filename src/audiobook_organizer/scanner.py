@@ -24,6 +24,8 @@ from .parser import (
     merge_meta,
     parse_audio_tags,
     parse_filename,
+    parse_metadata_json,
+    parse_metadata_json_from_zip,
     parse_title_folder,
     strip_author_from_title,
 )
@@ -165,10 +167,15 @@ def _check_file(path: Path, cfg: Config) -> ScanResult | None:
         # For zips, peek inside for audio files
         if ext == ".zip" and not _zip_contains_audio(path, cfg.audio_extensions):
             return None
-        # Must look like "Author - Title" (pattern match with a real author)
-        # Strip Windows download-duplicate suffix before parsing
+        # Try filename-based parsing first.
         clean_stem = _DUP_SUFFIX_RE.sub("", path.stem)
-        meta = parse_filename(clean_stem, cfg.filename_patterns)
+        file_meta = parse_filename(clean_stem, cfg.filename_patterns)
+        # For zips, try metadata.json inside the archive as a fallback.
+        zip_meta = parse_metadata_json_from_zip(path) if ext == ".zip" else None
+        if zip_meta:
+            meta = merge_meta(zip_meta, file_meta)
+        else:
+            meta = file_meta
         if meta.author == "Unknown Author":
             return None
         meta.source_path = path
@@ -204,7 +211,11 @@ def _check_dir(path: Path, cfg: Config) -> ScanResult | None:
     # Try to get metadata from the directory name first, then first audio file
     dir_meta = parse_filename(path.name, cfg.filename_patterns)
     first_audio_meta = parse_audio_tags(audio_files[0]) if audio_files else AudiobookMeta()
-    meta = merge_meta(first_audio_meta, dir_meta)
+    json_meta = parse_metadata_json(path)
+    if json_meta:
+        meta = merge_meta(json_meta, first_audio_meta, dir_meta)
+    else:
+        meta = merge_meta(first_audio_meta, dir_meta)
     # Skip directories where we can't identify an author (likely not an audiobook)
     if meta.author == "Unknown Author":
         return None
@@ -414,12 +425,15 @@ def _build_scan_result(
     else:
         dir_meta = parse_filename(path.name, cfg.filename_patterns)
 
+    json_meta = parse_metadata_json(path)
+
     if read_tags and info.audio_files:
         tag_meta = parse_audio_tags(Path(info.audio_files[0][0]))
-        meta = merge_meta(tag_meta, dir_meta)
     else:
         tag_meta = None
-        meta = dir_meta
+
+    sources = [s for s in (json_meta, tag_meta, dir_meta) if s is not None]
+    meta = merge_meta(*sources) if sources else dir_meta
 
     if author:
         meta.author = author

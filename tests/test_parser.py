@@ -16,6 +16,8 @@ from audiobook_organizer.parser import (
     normalize_path_name,
     parse_audio_tags,
     parse_filename,
+    parse_metadata_json,
+    parse_metadata_json_from_zip,
     parse_title_folder,
     path_parent_name,
     strip_author_from_title,
@@ -897,3 +899,154 @@ class TestStripAuthorFromTitle:
             "Fear, Trump in the White House by Bob Woodward",
             "Woodward, Bob",
         ) == "Fear, Trump in the White House"
+
+
+# ── parse_metadata_json ──────────────────────────────────────────────────
+
+import json
+
+
+class TestParseMetadataJson:
+    def test_full_metadata(self, tmp_path):
+        """Parse a complete metadata.json with author and narrator."""
+        meta_dir = tmp_path / "metadata"
+        meta_dir.mkdir()
+        (meta_dir / "metadata.json").write_text(json.dumps({
+            "title": "A Tale of Two Cities",
+            "creator": [
+                {"name": "Charles Dickens", "role": "aut"},
+                {"name": "Adam Henderson", "role": "nrt"},
+            ],
+        }))
+        meta = parse_metadata_json(tmp_path)
+        assert meta is not None
+        assert meta.author == "Charles Dickens"
+        assert meta.title == "A Tale of Two Cities"
+        assert meta.narrator == "Adam Henderson"
+
+    def test_no_metadata_dir(self, tmp_path):
+        """Returns None when metadata/metadata.json doesn't exist."""
+        assert parse_metadata_json(tmp_path) is None
+
+    def test_empty_json(self, tmp_path):
+        """Returns defaults for an empty JSON object."""
+        meta_dir = tmp_path / "metadata"
+        meta_dir.mkdir()
+        (meta_dir / "metadata.json").write_text("{}")
+        meta = parse_metadata_json(tmp_path)
+        assert meta is not None
+        assert meta.author == "Unknown Author"
+        assert meta.title == "Unknown Title"
+
+    def test_title_only(self, tmp_path):
+        """Extracts title when no creator entries."""
+        meta_dir = tmp_path / "metadata"
+        meta_dir.mkdir()
+        (meta_dir / "metadata.json").write_text(json.dumps({
+            "title": "Foundation",
+        }))
+        meta = parse_metadata_json(tmp_path)
+        assert meta is not None
+        assert meta.title == "Foundation"
+        assert meta.author == "Unknown Author"
+
+    def test_multiple_authors_uses_first(self, tmp_path):
+        """Uses the first author when multiple are listed."""
+        meta_dir = tmp_path / "metadata"
+        meta_dir.mkdir()
+        (meta_dir / "metadata.json").write_text(json.dumps({
+            "title": "Collab Book",
+            "creator": [
+                {"name": "Author One", "role": "aut"},
+                {"name": "Author Two", "role": "aut"},
+            ],
+        }))
+        meta = parse_metadata_json(tmp_path)
+        assert meta is not None
+        assert meta.author == "Author One"
+
+    def test_invalid_json(self, tmp_path):
+        """Returns None for unparsable JSON."""
+        meta_dir = tmp_path / "metadata"
+        meta_dir.mkdir()
+        (meta_dir / "metadata.json").write_text("not json at all")
+        assert parse_metadata_json(tmp_path) is None
+
+    def test_creator_with_unknown_roles_ignored(self, tmp_path):
+        """Only aut and nrt roles are used."""
+        meta_dir = tmp_path / "metadata"
+        meta_dir.mkdir()
+        (meta_dir / "metadata.json").write_text(json.dumps({
+            "title": "Illustrated Book",
+            "creator": [
+                {"name": "Some Illustrator", "role": "ill"},
+                {"name": "Real Author", "role": "aut"},
+            ],
+        }))
+        meta = parse_metadata_json(tmp_path)
+        assert meta is not None
+        assert meta.author == "Real Author"
+        assert meta.narrator is None
+
+
+# ── parse_metadata_json_from_zip ─────────────────────────────────────────
+
+import zipfile
+
+
+def _make_metadata_zip(tmp_path, metadata_dict, *, prefix=""):
+    """Helper: create a zip with metadata/metadata.json inside."""
+    zip_path = tmp_path / "book.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr(prefix + "metadata/metadata.json", json.dumps(metadata_dict))
+        # Add a dummy audio file so the zip isn't empty.
+        zf.writestr(prefix + "Part 001.mp3", b"fake audio")
+    return zip_path
+
+
+class TestParseMetadataJsonFromZip:
+    def test_full_metadata(self, tmp_path):
+        """Read author, title, narrator from zip."""
+        zp = _make_metadata_zip(tmp_path, {
+            "title": "A Tale of Two Cities",
+            "creator": [
+                {"name": "Charles Dickens", "role": "aut"},
+                {"name": "Adam Henderson", "role": "nrt"},
+            ],
+        })
+        meta = parse_metadata_json_from_zip(zp)
+        assert meta is not None
+        assert meta.author == "Charles Dickens"
+        assert meta.title == "A Tale of Two Cities"
+        assert meta.narrator == "Adam Henderson"
+
+    def test_nested_in_subdirectory(self, tmp_path):
+        """metadata.json wrapped in a top-level folder inside the zip."""
+        zp = _make_metadata_zip(tmp_path, {
+            "title": "Foundation",
+            "creator": [{"name": "Isaac Asimov", "role": "aut"}],
+        }, prefix="- Foundation/")
+        meta = parse_metadata_json_from_zip(zp)
+        assert meta is not None
+        assert meta.author == "Isaac Asimov"
+        assert meta.title == "Foundation"
+
+    def test_no_metadata_in_zip(self, tmp_path):
+        """Returns None when zip has no metadata.json."""
+        zip_path = tmp_path / "book.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("Part 001.mp3", b"fake audio")
+        assert parse_metadata_json_from_zip(zip_path) is None
+
+    def test_invalid_zip(self, tmp_path):
+        """Returns None for a non-zip file."""
+        fake = tmp_path / "book.zip"
+        fake.write_text("not a zip")
+        assert parse_metadata_json_from_zip(fake) is None
+
+    def test_corrupt_json_in_zip(self, tmp_path):
+        """Returns None when metadata.json inside zip is not valid JSON."""
+        zip_path = tmp_path / "book.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("metadata/metadata.json", "not json")
+        assert parse_metadata_json_from_zip(zip_path) is None

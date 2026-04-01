@@ -47,6 +47,7 @@ class AnalysisReport:
     total_size: int = 0
     authors: int = 0
     series: int = 0
+    items: list[ScanResult] = field(default_factory=list)
     issues: list[Issue] = field(default_factory=list)
     duplicates: list[tuple[ScanResult, ScanResult]] = field(default_factory=list)
     author_variants: list[tuple[str, str]] = field(default_factory=list)
@@ -81,6 +82,7 @@ def analyze_collection(
     report = AnalysisReport()
     report.total_books = len(items)
     report.total_size = sum(i.size for i in items)
+    report.items = items
 
     authors: set[str] = set()
     series_set: set[str] = set()

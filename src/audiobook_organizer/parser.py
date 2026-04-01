@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -449,3 +451,72 @@ def merge_meta(*sources: AudiobookMeta) -> AudiobookMeta:
         if result.source_path is None and src.source_path:
             result.source_path = src.source_path
     return result
+
+
+# Conventional path for sidecar metadata JSON.
+METADATA_JSON_PATH = Path("metadata") / "metadata.json"
+_METADATA_JSON_ZIP_NAME = "metadata/metadata.json"
+
+
+def _parse_metadata_dict(data: dict, source_path: Path | None = None) -> AudiobookMeta:
+    """Build an ``AudiobookMeta`` from a decoded metadata JSON dict."""
+    meta = AudiobookMeta(source_path=source_path)
+
+    title = data.get("title")
+    if isinstance(title, str) and title.strip():
+        meta.title = title.strip()
+
+    creators = data.get("creator")
+    if isinstance(creators, list):
+        for entry in creators:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            role = entry.get("role", "")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            name = name.strip()
+            if role == "aut" and meta.author == "Unknown Author":
+                meta.author = name
+            elif role == "nrt" and meta.narrator is None:
+                meta.narrator = name
+
+    return meta
+
+
+def parse_metadata_json(dir_path: Path) -> AudiobookMeta | None:
+    """Read ``metadata/metadata.json`` inside *dir_path* and return metadata.
+
+    Returns ``None`` if the file doesn't exist or can't be parsed.
+    The JSON format uses ``creator`` entries with roles:
+    ``"aut"`` for author, ``"nrt"`` for narrator.
+    """
+    json_path = dir_path / METADATA_JSON_PATH
+    if not json_path.is_file():
+        return None
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return _parse_metadata_dict(data, source_path=dir_path)
+
+
+def parse_metadata_json_from_zip(zip_path: Path) -> AudiobookMeta | None:
+    """Read ``metadata/metadata.json`` from inside a zip archive.
+
+    Returns ``None`` if the zip doesn't contain the file or can't be parsed.
+    """
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            # Try both with and without a top-level directory wrapper.
+            for name in zf.namelist():
+                if name == _METADATA_JSON_ZIP_NAME or name.endswith("/" + _METADATA_JSON_ZIP_NAME):
+                    raw = zf.read(name)
+                    data = json.loads(raw.decode("utf-8"))
+                    if isinstance(data, dict):
+                        return _parse_metadata_dict(data, source_path=zip_path)
+    except (zipfile.BadZipFile, OSError, json.JSONDecodeError, UnicodeDecodeError, KeyError):
+        return None
+    return None
