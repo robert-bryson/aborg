@@ -199,11 +199,11 @@ class TestMergeMeta:
 
     def test_strips_narrator_from_multi_author(self):
         """When narrator matches second name in 'Author, Narrator' author field."""
-        tag = AudiobookMeta(author="Deepa Bhasthi, Banu Mushtaq", narrator="Banu Mushtaq")
-        name = AudiobookMeta(title="Heart Lamp")
+        tag = AudiobookMeta(author="Stephen King, Will Patton", narrator="Will Patton")
+        name = AudiobookMeta(title="The Outsider")
         merged = merge_meta(tag, name)
-        assert merged.author == "Deepa Bhasthi"
-        assert merged.narrator == "Banu Mushtaq"
+        assert merged.author == "Stephen King"
+        assert merged.narrator == "Will Patton"
 
     def test_keeps_genuine_coauthors(self):
         """When narrator is someone else, both authors stay."""
