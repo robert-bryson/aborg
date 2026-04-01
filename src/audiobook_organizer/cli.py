@@ -353,12 +353,8 @@ def org(
             console.print("[yellow]No audiobook files found (check source directories above).[/yellow]")
         return
 
-    parts = [f"Found [bold]{len(items)}[/bold] audiobook(s)"]
-    if new_count:
-        parts.append(f"[green]{new_count} new[/green]")
-    if exist_count:
-        parts.append(f"[yellow]{exist_count} already in collection[/yellow]")
-    console.print("\n" + ", ".join(parts) + ".")
+    total_size = sum(i.size for i in items)
+    authors = len({i.meta.author for i in items})
 
     prefix = "DRY RUN — " if dry_run else ""
     prompt = f"\n{prefix}Organize {new_count} new item(s)?"
@@ -389,10 +385,13 @@ def org(
     console.print()
     verb = "Would move" if dry_run else ("Copying" if copy else "Moving")
     done = 0
+    skipped = 0
+    failed = 0
     with console.status(f"[bold green]{verb}…[/bold green]", spinner="dots") as status:
         for i, item in enumerate(items, 1):
             dest_full = cfg.destination / item.meta.dest_relative()
             if dest_full.exists():
+                skipped += 1
                 continue
             status.update(f"[bold green]{verb}:[/bold green] {item.meta.title}")
             result = organize([item], cfg, dry_run=dry_run, copy=copy)
@@ -401,9 +400,25 @@ def org(
                 console.print(
                     f"  [green]✓[/green] [dim]{i}.[/dim] {item.meta.author} — {item.meta.title}"
                 )
+            else:
+                failed += 1
 
-    verb_past = "Would move" if dry_run else ("Copied" if copy else "Moved")
-    console.print(f"\n[green]{verb_past} {done} item(s).[/green]")
+    verb_past = "Would organize" if dry_run else ("Copied" if copy else "Moved")
+
+    console.print()
+    summary = Table(title="Organize Summary", show_header=False)
+    summary.add_column("Metric", style="bold")
+    summary.add_column("Value", justify="right")
+    summary.add_row("Found", f"{len(items)} audiobook(s)")
+    summary.add_row(verb_past, f"[green]{done}[/green]")
+    summary.add_row("Already in collection", f"[yellow]{skipped}[/yellow]")
+    if failed:
+        summary.add_row("Failed", f"[red]{failed}[/red]")
+    summary.add_row("Authors", str(authors))
+    summary.add_row("Total size", _human_size(total_size))
+    if missing_dirs:
+        summary.add_row("Missing source dirs", f"[red]{len(missing_dirs)}[/red]")
+    console.print(summary)
 
 
 # ── fetch (Libby / OverDrive) ───────────────────────────────────────────
