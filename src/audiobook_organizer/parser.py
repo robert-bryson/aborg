@@ -178,30 +178,105 @@ def _strip_author_from_name(name: str, known_author: str) -> str | None:
 
 
 def _parse_title_remainder(text: str) -> AudiobookMeta:
-    """Parse a title/year string remaining after the author has been stripped."""
+    """Parse a title/year/narrator/sequence string after the author is stripped.
+
+    Handles Audiobookshelf-style title folder naming conventions:
+      - Narrator in ``{curly braces}`` or ``[square brackets]``
+      - Volume/Book sequence: ``Vol 1 - …``, ``Book 2 - …``, ``1 - …``, ``1. …``
+      - Year: ``YYYY - …``, ``(YYYY) - …``, ``… - YYYY``, ``… (YYYY)``
+      - Combinations: ``Vol 1 - 1994 - Wizards First Rule {Sam Tsoutsouvas}``
+    """
     meta = AudiobookMeta()
     text = text.strip()
     if not text:
         return meta
 
-    # "Title - Year" or "Title (Year)"
-    m = re.match(r"^(.+?)\s*[-\u2013\u2014]\s*(\d{4})$", text)
-    if not m:
-        m = re.match(r"^(.+?)\s*\((\d{4})\)\s*$", text)
-    if m and m.group(1).strip():
-        meta.title = m.group(1).strip()
-        meta.year = m.group(2)
+    # ── Step 1: extract narrator from {curly braces} or [square brackets] ──
+    m_narrator = re.search(r"\{(.+?)\}\s*$", text)
+    if not m_narrator:
+        m_narrator = re.search(r"\[([^\]]+)\]\s*$", text)
+    if m_narrator:
+        meta.narrator = m_narrator.group(1).strip()
+        text = text[: m_narrator.start()].strip(" -\u2013\u2014")
+
+    if not text:
         return meta
 
-    # "Year - Title"
-    m = re.match(r"^(\d{4})\s*[-\u2013\u2014]\s*(.+)$", text)
-    if m:
-        meta.year = m.group(1)
-        meta.title = m.group(2).strip()
+    # ── Step 2: extract sequence (Vol/Book/bare number at start) ──
+    # "Vol 1 - …", "Vol. 2 - …", "Volume 3 - …", "Book 1 - …"
+    m_seq = re.match(
+        r"^(?:Vol\.?|Volume|Book)\s*(\d+(?:\.\d+)?)\s*[-.\u2013\u2014]\s*",
+        text,
+        re.IGNORECASE,
+    )
+    if m_seq:
+        meta.sequence = m_seq.group(1)
+        text = text[m_seq.end() :].strip()
+    else:
+        # Bare leading number: "1 - …" or "1. …" (but not a 4-digit year)
+        m_bare = re.match(
+            r"^(\d{1,3}(?:\.\d+)?)\s*[-.\u2013\u2014]\s+", text
+        )
+        if m_bare:
+            meta.sequence = m_bare.group(1)
+            text = text[m_bare.end() :].strip()
+
+    if not text:
         return meta
 
-    # Bare year — record it but leave title unknown
-    if re.match(r"^\d{4}$", text):
+    # ── Step 3: extract year ──
+    # Leading "(YYYY) - …"
+    m_paren_year = re.match(r"^\((\d{4})\)\s*[-\u2013\u2014]\s*", text)
+    if m_paren_year:
+        meta.year = m_paren_year.group(1)
+        text = text[m_paren_year.end() :].strip()
+    else:
+        # Leading "YYYY - …"
+        m_lead_year = re.match(r"^(\d{4})\s*[-\u2013\u2014]\s+", text)
+        if m_lead_year:
+            meta.year = m_lead_year.group(1)
+            text = text[m_lead_year.end() :].strip()
+        else:
+            # Trailing "… - YYYY" or "… (YYYY)"
+            m_trail = re.search(r"\s*[-\u2013\u2014]\s*(\d{4})$", text)
+            if not m_trail:
+                m_trail = re.search(r"\s*\((\d{4})\)\s*$", text)
+            if m_trail:
+                meta.year = m_trail.group(1)
+                text = text[: m_trail.start()].strip()
+
+    # ── Step 3b: if year was extracted and no sequence yet, try sequence again ──
+    # Handles "1994 - Book 1 - Title" where year consumed first.
+    if meta.year and not meta.sequence and text:
+        m_seq2 = re.match(
+            r"^(?:Vol\.?|Volume|Book)\s*(\d+(?:\.\d+)?)\s*[-.\u2013\u2014]\s*",
+            text,
+            re.IGNORECASE,
+        )
+        if m_seq2:
+            meta.sequence = m_seq2.group(1)
+            text = text[m_seq2.end() :].strip()
+
+    # ── Step 3c: trailing sequence "… - Volume 1" / "… - Book 2" ──
+    if not meta.sequence and text:
+        m_trail_seq = re.search(
+            r"\s*[-\u2013\u2014]\s*(?:Vol\.?|Volume|Book)\s*(\d+(?:\.\d+)?)\s*$",
+            text,
+            re.IGNORECASE,
+        )
+        if m_trail_seq:
+            meta.sequence = m_trail_seq.group(1)
+            text = text[: m_trail_seq.start()].strip()
+
+    if not text:
+        # Only a year (and possibly sequence) — no title.
+        if meta.year:
+            return meta
+        # Nothing left
+        return meta
+
+    # Bare 4-digit year with nothing else
+    if re.match(r"^\d{4}$", text) and not meta.year:
         meta.year = text
         return meta
 
@@ -218,11 +293,24 @@ def parse_title_folder(
     title, year, and other metadata.  Falls back to ``parse_filename`` when
     the author isn't found in the name.
     """
+    # Pre-extract narrator from {braces} or [brackets] so it doesn't
+    # interfere with author-segment fuzzy matching.
+    narrator = None
+    clean_name = name
+    m_narrator = re.search(r"\{(.+?)\}\s*$", name)
+    if not m_narrator:
+        m_narrator = re.search(r"\[([^\]]+)\]\s*$", name)
+    if m_narrator:
+        narrator = m_narrator.group(1).strip()
+        clean_name = name[: m_narrator.start()].strip(" -\u2013\u2014")
+
     # Step 1: try stripping the known author from the folder name.
-    stripped = _strip_author_from_name(name, known_author)
+    stripped = _strip_author_from_name(clean_name, known_author)
     if stripped is not None:
         meta = _parse_title_remainder(stripped)
         meta.author = known_author
+        if narrator and not meta.narrator:
+            meta.narrator = narrator
         return meta
 
     # Step 2: try interpreting as a direct title/year (no author expected).

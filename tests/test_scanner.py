@@ -2,8 +2,10 @@
 
 import zipfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from audiobook_organizer.config import Config
+from audiobook_organizer.parser import AudiobookMeta
 from audiobook_organizer.scanner import scan_collection, scan_sources
 
 from .conftest import make_cfg
@@ -147,7 +149,9 @@ class TestScanCollection:
         assert "Author B" in authors
 
     def test_scans_series_structure(self, tmp_path):
-        # Audio in subdirs of a series dir → each title dir is a separate book
+        # Audio in subdirs of a series dir → _collect_dir_info walks
+        # recursively, so the series dir itself reports audio_count > 0
+        # and is treated as a single title dir.
         title1 = tmp_path / "Author" / "Series" / "Book 1"
         title2 = tmp_path / "Author" / "Series" / "Book 2"
         _make_audio_file(title1 / "audio.mp3")
@@ -155,9 +159,8 @@ class TestScanCollection:
 
         cfg = make_cfg()
         collection = scan_collection(tmp_path, cfg)
-        # The series dir itself has audio in subdirs → treated as a title dir
-        assert len(collection.items) >= 1
-        assert any(r.meta.author == "Author" for r in collection.items)
+        assert len(collection.items) == 1
+        assert collection.items[0].meta.author == "Author"
 
     def test_empty_collection(self, tmp_path):
         cfg = Config()
@@ -204,3 +207,209 @@ class TestScanCollection:
         collection = scan_collection(tmp_path, cfg)
         assert len(collection.items) == 1
         assert collection.items[0].has_cover is False
+
+
+# ── Real-world messy data: Asimov collection ─────────────────────────────
+
+
+class TestMessyAsimovCollection:
+    """End-to-end tests simulating the real messy Asimov audiobook data.
+
+    Book 1: Asimov, Issac/I, Robot - Isaac Asimov - 1950/
+      - Note the typo ("Issac" vs "Isaac") and author embedded in folder name.
+      - Audio files: "02 02 - I, Robot.mp3"
+
+    Book 2: Asimov, Issac/Isaac Asimov - 1951/
+      - Folder name has only author + year, no title at all.
+      - Audio files: "1-01 1a.mp3" (generic numbered filenames)
+      - Tags: artist="Top 100 Sci-Fi Books", album="03 - Book 1 - Foundation - Isaac Asimov"
+    """
+
+    def _build_collection(self, root: Path) -> None:
+        """Create the messy Asimov folder structure with dummy audio files."""
+        # Book 1: I, Robot
+        book1 = root / "Asimov, Issac" / "I, Robot - Isaac Asimov - 1950"
+        _make_audio_file(book1 / "01 01 - I, Robot.mp3")
+        _make_audio_file(book1 / "02 02 - I, Robot.mp3")
+        _make_audio_file(book1 / "03 03 - I, Robot.mp3")
+
+        # Book 2: Foundation (folder name is just "Isaac Asimov - 1951")
+        book2 = root / "Asimov, Issac" / "Isaac Asimov - 1951"
+        _make_audio_file(book2 / "1-01 1a.mp3")
+        _make_audio_file(book2 / "1-02 1b.mp3")
+        _make_audio_file(book2 / "1-03 1c.mp3")
+
+    # -- Without tags (read_tags=False) --
+
+    def test_irobot_parsed_from_folder_name(self, tmp_path):
+        """'I, Robot - Isaac Asimov - 1950' under 'Asimov, Issac' → correct metadata."""
+        self._build_collection(tmp_path)
+        cfg = make_cfg()
+        collection = scan_collection(tmp_path, cfg, read_tags=False)
+
+        robot = next(
+            r for r in collection.items
+            if "Robot" in r.path.name
+        )
+        assert robot.meta.author == "Asimov, Issac"
+        assert robot.meta.title == "I, Robot"
+        assert robot.meta.year == "1950"
+
+    def test_irobot_dest_path(self, tmp_path):
+        """I, Robot should produce the correct Audiobookshelf destination."""
+        self._build_collection(tmp_path)
+        cfg = make_cfg()
+        collection = scan_collection(tmp_path, cfg, read_tags=False)
+
+        robot = next(r for r in collection.items if "Robot" in r.path.name)
+        assert robot.meta.dest_folder_name() == "1950 - I, Robot"
+        assert str(robot.meta.dest_relative()) == "Asimov, Issac/1950 - I, Robot"
+
+    def test_foundation_folder_only_author_and_year(self, tmp_path):
+        """'Isaac Asimov - 1951' under 'Asimov, Issac' → author + year, title unknown."""
+        self._build_collection(tmp_path)
+        cfg = make_cfg()
+        collection = scan_collection(tmp_path, cfg, read_tags=False)
+
+        found = next(r for r in collection.items if "1951" in r.path.name)
+        assert found.meta.author == "Asimov, Issac"
+        assert found.meta.year == "1951"
+        # Without tags, there's no way to know the title from the folder name alone.
+        assert found.meta.title == "Unknown Title"
+
+    def test_foundation_should_not_suggest_bad_rename(self, tmp_path):
+        """The folder 'Isaac Asimov - 1951' must NOT parse Isaac Asimov as the title."""
+        self._build_collection(tmp_path)
+        cfg = make_cfg()
+        collection = scan_collection(tmp_path, cfg, read_tags=False)
+
+        found = next(r for r in collection.items if "1951" in r.path.name)
+        dest = found.meta.dest_folder_name()
+        # dest_folder_name() is just the title folder — no author component.
+        # It must not contain the author's name as a title.
+        assert "Isaac Asimov" not in dest
+        assert "Asimov" not in dest
+
+    def test_both_books_found(self, tmp_path):
+        """Both books should be discovered in a single collection scan."""
+        self._build_collection(tmp_path)
+        cfg = make_cfg()
+        collection = scan_collection(tmp_path, cfg, read_tags=False)
+
+        assert len(collection.items) == 2
+        titles = {r.meta.title for r in collection.items}
+        assert "I, Robot" in titles
+        authors = {r.meta.author for r in collection.items}
+        assert authors == {"Asimov, Issac"}
+
+    def test_all_file_counts(self, tmp_path):
+        """Each book dir should report the correct number of audio files."""
+        self._build_collection(tmp_path)
+        cfg = make_cfg()
+        collection = scan_collection(tmp_path, cfg, read_tags=False)
+
+        for item in collection.items:
+            assert item.file_count == 3
+            assert item.kind == "audio_dir"
+
+    # -- With mocked Mutagen (raw tag strings exercise the full pipeline) --
+    #
+    # We mock audiobook_organizer.parser.MutagenFile (not parse_audio_tags)
+    # so that looks_like_author(), _clean_tag_title(), and merge_meta() all
+    # run against the raw tag values — just like real audio files would.
+
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_foundation_title_from_raw_tags(self, mock_mutagen, tmp_path):
+        """Raw tags: artist='Top 100 Sci-Fi Books' (rejected by looks_like_author),
+        album='03 - Book 1 - Foundation - Isaac Asimov' (_clean_tag_title strips '03 - '),
+        strip_author_from_title removes 'Isaac Asimov' → final title 'Book 1 - Foundation'."""
+        self._build_collection(tmp_path)
+
+        def _fake_mutagen(path, easy=False):
+            if "1951" in str(path):
+                m = MagicMock()
+                m.tags = {
+                    "artist": ["Top 100 Sci-Fi Books"],
+                    "album": ["03 - Book 1 - Foundation - Isaac Asimov"],
+                    "date": ["1951"],
+                }
+                return m
+            return None  # no tags for other files
+
+        mock_mutagen.side_effect = _fake_mutagen
+
+        cfg = make_cfg()
+        collection = scan_collection(tmp_path, cfg, read_tags=True)
+
+        found = next(r for r in collection.items if "1951" in r.path.name)
+        assert found.meta.author == "Asimov, Issac"  # from dir, not tags
+        assert found.meta.year == "1951"
+        # _clean_tag_title strips "03 - ", strip_author_from_title strips "- Isaac Asimov"
+        assert found.meta.title == "Book 1 - Foundation"
+        assert "Isaac Asimov" not in found.meta.title
+
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_irobot_unaffected_by_empty_tags(self, mock_mutagen, tmp_path):
+        """I, Robot folder has good metadata; empty tags shouldn't override it."""
+        self._build_collection(tmp_path)
+        mock_mutagen.return_value = None  # Mutagen returns None for unreadable files
+
+        cfg = make_cfg()
+        collection = scan_collection(tmp_path, cfg, read_tags=True)
+
+        robot = next(r for r in collection.items if "Robot" in r.path.name)
+        assert robot.meta.author == "Asimov, Issac"
+        assert robot.meta.title == "I, Robot"
+        assert robot.meta.year == "1950"
+
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_irobot_with_good_tags_merges_narrator(self, mock_mutagen, tmp_path):
+        """Raw tags with composer='Scott Brick' → narrator merged into metadata."""
+        self._build_collection(tmp_path)
+
+        def _fake_mutagen(path, easy=False):
+            if "Robot" in str(path):
+                m = MagicMock()
+                m.tags = {
+                    "artist": ["Isaac Asimov"],
+                    "album": ["I, Robot"],
+                    "date": ["1950"],
+                    "composer": ["Scott Brick"],
+                }
+                return m
+            return None
+
+        mock_mutagen.side_effect = _fake_mutagen
+
+        cfg = make_cfg()
+        collection = scan_collection(tmp_path, cfg, read_tags=True)
+
+        robot = next(r for r in collection.items if "Robot" in r.path.name)
+        assert robot.meta.author == "Asimov, Issac"  # dir author wins
+        assert robot.meta.title == "I, Robot"
+        assert robot.meta.narrator == "Scott Brick"
+
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_foundation_dest_path_with_raw_tags(self, mock_mutagen, tmp_path):
+        """Full pipeline: raw tags → _clean_tag_title → merge → strip_author → dest path."""
+        self._build_collection(tmp_path)
+
+        def _fake_mutagen(path, easy=False):
+            if "1951" in str(path):
+                m = MagicMock()
+                m.tags = {
+                    "artist": ["Top 100 Sci-Fi Books"],
+                    "album": ["03 - Book 1 - Foundation - Isaac Asimov"],
+                    "date": ["1951"],
+                }
+                return m
+            return None
+
+        mock_mutagen.side_effect = _fake_mutagen
+
+        cfg = make_cfg()
+        collection = scan_collection(tmp_path, cfg, read_tags=True)
+
+        found = next(r for r in collection.items if "1951" in r.path.name)
+        assert found.meta.dest_folder_name() == "1951 - Book 1 - Foundation"
+        assert str(found.meta.dest_relative()) == "Asimov, Issac/1951 - Book 1 - Foundation"

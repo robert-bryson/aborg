@@ -79,10 +79,11 @@ class TestParseFilename:
         assert meta.narrator is None
 
     def test_title_author_year(self):
-        # Pattern 2 (Author - Title) matches before pattern 3, so author/title are swapped
-        # Use a format that only pattern 3 can match (no year in pattern-2 position)
+        # Known ambiguity: "Title - Author (Year)" also matches pattern 2
+        # (Author - Title) which is tried first, so author/title get swapped.
+        # This test documents current behaviour — callers that know the author
+        # should use parse_title_folder() instead.
         meta = parse_filename("Animal Farm - George Orwell (1945)", PATTERNS)
-        # Pattern 2 matches: author="Animal Farm", title="George Orwell", year="1945"
         assert meta.author == "Animal Farm"
         assert meta.title == "George Orwell"
         assert meta.year == "1945"
@@ -381,6 +382,30 @@ class TestStripAuthorFromName:
 
 
 class TestParseTitleRemainder:
+    """Comprehensive tests for ABS-style title folder name parsing.
+
+    Covers all Audiobookshelf naming conventions plus messy real-world data.
+    """
+
+    # -- Basic patterns --
+
+    def test_plain_title(self):
+        meta = _parse_title_remainder("Foundation")
+        assert meta.title == "Foundation"
+        assert meta.year is None
+        assert meta.sequence is None
+        assert meta.narrator is None
+
+    def test_empty_string(self):
+        meta = _parse_title_remainder("")
+        assert meta.title == "Unknown Title"
+
+    def test_whitespace_only(self):
+        meta = _parse_title_remainder("   ")
+        assert meta.title == "Unknown Title"
+
+    # -- Year extraction --
+
     def test_title_dash_year(self):
         meta = _parse_title_remainder("I, Robot - 1950")
         assert meta.title == "I, Robot"
@@ -396,19 +421,193 @@ class TestParseTitleRemainder:
         assert meta.title == "Foundation"
         assert meta.year == "1951"
 
+    def test_paren_year_prefix(self):
+        """ABS format: (YYYY) - Title"""
+        meta = _parse_title_remainder("(1994) - Wizards First Rule")
+        assert meta.title == "Wizards First Rule"
+        assert meta.year == "1994"
+
     def test_bare_year(self):
         meta = _parse_title_remainder("1951")
         assert meta.title == "Unknown Title"
         assert meta.year == "1951"
 
-    def test_plain_title(self):
-        meta = _parse_title_remainder("Foundation")
+    # -- Narrator extraction --
+
+    def test_narrator_curly_braces(self):
+        """ABS convention: {Narrator Name}"""
+        meta = _parse_title_remainder("Wizards First Rule {Sam Tsoutsouvas}")
+        assert meta.title == "Wizards First Rule"
+        assert meta.narrator == "Sam Tsoutsouvas"
+
+    def test_narrator_square_brackets(self):
+        """Common alternative: [Narrator Name]"""
+        meta = _parse_title_remainder("Foundation [Scott Brick]")
         assert meta.title == "Foundation"
+        assert meta.narrator == "Scott Brick"
+
+    def test_narrator_with_year(self):
+        meta = _parse_title_remainder("1994 - Wizards First Rule {Sam Tsoutsouvas}")
+        assert meta.title == "Wizards First Rule"
+        assert meta.year == "1994"
+        assert meta.narrator == "Sam Tsoutsouvas"
+
+    # -- Sequence (Vol/Book/bare number) extraction --
+
+    def test_vol_prefix(self):
+        meta = _parse_title_remainder("Vol 1 - Wizards First Rule")
+        assert meta.title == "Wizards First Rule"
+        assert meta.sequence == "1"
+
+    def test_vol_dot_prefix(self):
+        meta = _parse_title_remainder("Vol. 2 - Stone of Tears")
+        assert meta.title == "Stone of Tears"
+        assert meta.sequence == "2"
+
+    def test_volume_prefix(self):
+        meta = _parse_title_remainder("Volume 3 - Blood of the Fold")
+        assert meta.title == "Blood of the Fold"
+        assert meta.sequence == "3"
+
+    def test_book_prefix(self):
+        meta = _parse_title_remainder("Book 1 - The Final Empire")
+        assert meta.title == "The Final Empire"
+        assert meta.sequence == "1"
+
+    def test_bare_number_prefix(self):
+        """ABS format: '1 - Title' or '1. Title'"""
+        meta = _parse_title_remainder("1 - Wizards First Rule")
+        assert meta.title == "Wizards First Rule"
+        assert meta.sequence == "1"
+
+    def test_bare_number_dot_prefix(self):
+        meta = _parse_title_remainder("1. Wizards First Rule")
+        assert meta.title == "Wizards First Rule"
+        assert meta.sequence == "1"
+
+    def test_decimal_sequence(self):
+        """ABS supports decimal sequences."""
+        meta = _parse_title_remainder("Vol 1.5 - A Novella")
+        assert meta.title == "A Novella"
+        assert meta.sequence == "1.5"
+
+    def test_trailing_volume(self):
+        """ABS format: Title - Volume 1"""
+        meta = _parse_title_remainder("Wizards First Rule - Volume 1")
+        assert meta.title == "Wizards First Rule"
+        assert meta.sequence == "1"
+
+    def test_trailing_book(self):
+        meta = _parse_title_remainder("Wizards First Rule - Book 2")
+        assert meta.title == "Wizards First Rule"
+        assert meta.sequence == "2"
+
+    # -- Combined ABS formats (from documentation) --
+
+    def test_abs_vol_year_title(self):
+        """ABS: Vol 1 - 1994 - Wizards First Rule"""
+        meta = _parse_title_remainder("Vol 1 - 1994 - Wizards First Rule")
+        assert meta.title == "Wizards First Rule"
+        assert meta.year == "1994"
+        assert meta.sequence == "1"
+
+    def test_abs_vol_year_title_narrator(self):
+        """ABS: Vol. 1 - 1994 - Wizards First Rule {Sam Tsoutsouvas}"""
+        meta = _parse_title_remainder(
+            "Vol. 1 - 1994 - Wizards First Rule {Sam Tsoutsouvas}"
+        )
+        assert meta.title == "Wizards First Rule"
+        assert meta.year == "1994"
+        assert meta.sequence == "1"
+        assert meta.narrator == "Sam Tsoutsouvas"
+
+    def test_abs_year_book_title(self):
+        """ABS: 1994 - Book 1 - Wizards First Rule"""
+        meta = _parse_title_remainder("1994 - Book 1 - Wizards First Rule")
+        assert meta.title == "Wizards First Rule"
+        assert meta.year == "1994"
+        assert meta.sequence == "1"
+
+    def test_abs_year_title_volume_suffix(self):
+        """ABS: 1994 - Wizards First Rule - Volume 1"""
+        meta = _parse_title_remainder("1994 - Wizards First Rule - Volume 1")
+        assert meta.title == "Wizards First Rule"
+        assert meta.year == "1994"
+        assert meta.sequence == "1"
+
+    def test_abs_paren_year_title_subtitle(self):
+        """ABS: (1994) - Wizards First Rule - A Really Good Subtitle"""
+        meta = _parse_title_remainder(
+            "(1994) - Wizards First Rule - A Really Good Subtitle"
+        )
+        assert meta.title == "Wizards First Rule - A Really Good Subtitle"
+        assert meta.year == "1994"
+
+    def test_abs_full_complex(self):
+        """ABS: Vol. 1 - 1994 - Title - Subtitle {Narrator}"""
+        meta = _parse_title_remainder(
+            "Vol. 1 - 1994 - Wizards First Rule - A Really Good Subtitle {Sam Tsoutsouvas}"
+        )
+        assert meta.title == "Wizards First Rule - A Really Good Subtitle"
+        assert meta.year == "1994"
+        assert meta.sequence == "1"
+        assert meta.narrator == "Sam Tsoutsouvas"
+
+    # -- Messy / edge-case real-world data --
+
+    def test_extra_whitespace(self):
+        meta = _parse_title_remainder("  Foundation   -   1951  ")
+        assert meta.title == "Foundation"
+        assert meta.year == "1951"
+
+    def test_en_dash_separator(self):
+        """Unicode en-dash (U+2013) used as separator."""
+        meta = _parse_title_remainder("1951 \u2013 Foundation")
+        assert meta.title == "Foundation"
+        assert meta.year == "1951"
+
+    def test_em_dash_separator(self):
+        """Unicode em-dash (U+2014) used as separator."""
+        meta = _parse_title_remainder("Foundation \u2014 1951")
+        assert meta.title == "Foundation"
+        assert meta.year == "1951"
+
+    def test_title_with_colon(self):
+        meta = _parse_title_remainder("The Hobbit: An Unexpected Journey")
+        assert meta.title == "The Hobbit: An Unexpected Journey"
+
+    def test_title_with_numbers_not_year(self):
+        """Titles containing numbers shouldn't be mis-parsed as years."""
+        meta = _parse_title_remainder("Fahrenheit 451")
+        assert meta.title == "Fahrenheit 451"
         assert meta.year is None
 
-    def test_empty_string(self):
-        meta = _parse_title_remainder("")
-        assert meta.title == "Unknown Title"
+    def test_title_with_numbers_and_year(self):
+        meta = _parse_title_remainder("Fahrenheit 451 (1953)")
+        assert meta.title == "Fahrenheit 451"
+        assert meta.year == "1953"
+
+    def test_title_starting_with_number(self):
+        """4-digit number as part of title, not year, when there's more text."""
+        meta = _parse_title_remainder("2001 A Space Odyssey")
+        # No dash separator → treated as a plain title, not a year
+        assert meta.title == "2001 A Space Odyssey"
+        assert meta.year is None
+
+    def test_title_2001_with_year(self):
+        meta = _parse_title_remainder("1968 - 2001 A Space Odyssey")
+        assert meta.title == "2001 A Space Odyssey"
+        assert meta.year == "1968"
+
+    def test_narrator_with_dots(self):
+        meta = _parse_title_remainder("Foundation {J.R.R. Tolkien}")
+        assert meta.narrator == "J.R.R. Tolkien"
+
+    def test_three_digit_sequence_not_year(self):
+        """3-digit leading number is a sequence, not a year."""
+        meta = _parse_title_remainder("100 - The Hundredth Title")
+        assert meta.sequence == "100"
+        assert meta.title == "The Hundredth Title"
         assert meta.year is None
 
 
@@ -416,6 +615,10 @@ class TestParseTitleRemainder:
 
 
 class TestParseTitleFolder:
+    """Tests for author-aware title folder parsing, including messy data."""
+
+    # -- Existing Asimov bug-fix cases --
+
     def test_strips_author_extracts_title_and_year(self):
         meta = parse_title_folder(
             "I, Robot - Isaac Asimov - 1950", "Asimov, Issac", PATTERNS,
@@ -441,24 +644,146 @@ class TestParseTitleFolder:
         assert meta.year == "1951"
         assert meta.author == "Asimov, Isaac"
 
-    def test_fallback_to_parse_filename(self):
-        # No author found in name, but it has "Title (Year)" structure
+    def test_title_with_parenthesized_year(self):
         meta = parse_title_folder(
             "Mistborn Book 1 - The Final Empire (2006)",
             "Brandon Sanderson",
             PATTERNS,
         )
         assert meta.author == "Brandon Sanderson"
-        # _parse_title_remainder captures full text as title with year
         assert meta.title == "Mistborn Book 1 - The Final Empire"
         assert meta.year == "2006"
 
     def test_dest_folder_name_after_fix(self):
-        """The dest_folder_name should now be correct for the I, Robot case."""
         meta = parse_title_folder(
             "I, Robot - Isaac Asimov - 1950", "Asimov, Issac", PATTERNS,
         )
         assert meta.dest_folder_name() == "1950 - I, Robot"
+
+    # -- ABS-style folder names with known author --
+
+    def test_abs_narrator_curly_braces(self):
+        meta = parse_title_folder(
+            "Foundation {Scott Brick}", "Isaac Asimov", PATTERNS,
+        )
+        assert meta.title == "Foundation"
+        assert meta.narrator == "Scott Brick"
+        assert meta.author == "Isaac Asimov"
+
+    def test_abs_narrator_square_brackets(self):
+        meta = parse_title_folder(
+            "Foundation [Scott Brick]", "Isaac Asimov", PATTERNS,
+        )
+        assert meta.title == "Foundation"
+        assert meta.narrator == "Scott Brick"
+
+    def test_abs_vol_year_title(self):
+        meta = parse_title_folder(
+            "Vol 1 - 1994 - Wizards First Rule", "Terry Goodkind", PATTERNS,
+        )
+        assert meta.title == "Wizards First Rule"
+        assert meta.year == "1994"
+        assert meta.sequence == "1"
+        assert meta.author == "Terry Goodkind"
+
+    def test_abs_vol_year_title_narrator(self):
+        meta = parse_title_folder(
+            "Vol. 1 - 1994 - Wizards First Rule {Sam Tsoutsouvas}",
+            "Terry Goodkind",
+            PATTERNS,
+        )
+        assert meta.title == "Wizards First Rule"
+        assert meta.year == "1994"
+        assert meta.sequence == "1"
+        assert meta.narrator == "Sam Tsoutsouvas"
+
+    def test_abs_year_book_title(self):
+        meta = parse_title_folder(
+            "1994 - Book 1 - Wizards First Rule", "Terry Goodkind", PATTERNS,
+        )
+        assert meta.title == "Wizards First Rule"
+        assert meta.year == "1994"
+        assert meta.sequence == "1"
+
+    def test_abs_paren_year(self):
+        meta = parse_title_folder(
+            "(2006) - The Final Empire", "Brandon Sanderson", PATTERNS,
+        )
+        assert meta.title == "The Final Empire"
+        assert meta.year == "2006"
+
+    def test_abs_bare_sequence(self):
+        meta = parse_title_folder(
+            "1 - Wizards First Rule", "Terry Goodkind", PATTERNS,
+        )
+        assert meta.title == "Wizards First Rule"
+        assert meta.sequence == "1"
+
+    def test_abs_trailing_volume(self):
+        meta = parse_title_folder(
+            "1994 - Wizards First Rule - Volume 1", "Terry Goodkind", PATTERNS,
+        )
+        assert meta.title == "Wizards First Rule"
+        assert meta.year == "1994"
+        assert meta.sequence == "1"
+
+    # -- Messy real-world data --
+
+    def test_author_with_typo_stripped(self):
+        """Fuzzy matching handles 'Issac' vs 'Isaac' in folder name."""
+        meta = parse_title_folder(
+            "Issac Asimov - Foundation - 1951", "Asimov, Isaac", PATTERNS,
+        )
+        assert meta.author == "Asimov, Isaac"
+        assert meta.title == "Foundation"
+        assert meta.year == "1951"
+
+    def test_author_stripped_narrator_preserved(self):
+        """Author stripped but narrator in braces is preserved."""
+        meta = parse_title_folder(
+            "I, Robot - Isaac Asimov {Scott Brick}",
+            "Asimov, Issac",
+            PATTERNS,
+        )
+        assert meta.title == "I, Robot"
+        assert meta.narrator == "Scott Brick"
+        assert meta.author == "Asimov, Issac"
+
+    def test_messy_title_only_year_and_author(self):
+        """Folder has only author + year — title should be Unknown."""
+        meta = parse_title_folder(
+            "Isaac Asimov - 1951", "Asimov, Issac", PATTERNS,
+        )
+        assert meta.year == "1951"
+        assert meta.title == "Unknown Title"
+        # Must not suggest Asimov as the title
+        assert "Asimov" not in meta.dest_folder_name()
+
+    def test_title_with_comma_not_confused_with_author(self):
+        """Titles containing commas shouldn't trip up parsing."""
+        meta = parse_title_folder(
+            "Caves of Steel, The", "Isaac Asimov", PATTERNS,
+        )
+        assert meta.title == "Caves of Steel, The"
+        assert meta.author == "Isaac Asimov"
+
+    def test_multiple_dashes_preserves_subtitle(self):
+        """Multiple dashes: subtitle preserved as part of title."""
+        meta = parse_title_folder(
+            "Heart of Black Ice - Sister of Darkness",
+            "Terry Goodkind",
+            PATTERNS,
+        )
+        assert meta.title == "Heart of Black Ice - Sister of Darkness"
+
+    def test_dest_relative_with_series(self):
+        """dest_relative includes series folder when series is set."""
+        meta = parse_title_folder(
+            "Vol 1 - 1994 - Wizards First Rule", "Terry Goodkind", PATTERNS,
+        )
+        meta.series = "Sword of Truth"
+        expected = "Terry Goodkind/Sword of Truth/Vol 1 - 1994 - Wizards First Rule"
+        assert str(meta.dest_relative()) == expected
 
 
 # ── strip_author_from_title ──────────────────────────────────────────────
