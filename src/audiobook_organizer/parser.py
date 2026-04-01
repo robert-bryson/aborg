@@ -241,7 +241,9 @@ def _parse_title_remainder(text: str) -> AudiobookMeta:
             text = text[m_lead_year.end() :].strip()
         else:
             # Trailing "… - YYYY" or "… (YYYY)"
-            m_trail = re.search(r"\s*[-\u2013\u2014]\s*(\d{4})$", text)
+            # Negative lookbehind for a digit prevents splitting year
+            # ranges like "1944-1956" into title + year.
+            m_trail = re.search(r"(?<!\d)\s*[-\u2013\u2014]\s*(\d{4})$", text)
             if not m_trail:
                 m_trail = re.search(r"\s*\((\d{4})\)\s*$", text)
             if m_trail:

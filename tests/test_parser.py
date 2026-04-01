@@ -641,6 +641,12 @@ class TestParseTitleRemainder:
         assert meta.title == "The Hundredth Title"
         assert meta.year is None
 
+    def test_year_range_not_split(self):
+        """Year ranges like 1944-1956 must stay intact in the title."""
+        meta = _parse_title_remainder("The Crushing of Eastern Europe, 1944-1956")
+        assert meta.title == "The Crushing of Eastern Europe, 1944-1956"
+        assert meta.year is None
+
 
 # ── parse_title_folder ───────────────────────────────────────────────────
 
@@ -845,6 +851,28 @@ class TestParseTitleFolder:
         )
         assert meta.title == "Fear"
         assert meta.author == "Bob Woodward"
+
+    def test_year_range_in_title_preserved(self):
+        """Year range 1944-1956 must not be split into title + year."""
+        meta = parse_title_folder(
+            "The Crushing of Eastern Europe, 1944-1956",
+            "Applebaum, Anne",
+            PATTERNS,
+        )
+        assert meta.author == "Applebaum, Anne"
+        assert meta.title == "The Crushing of Eastern Europe, 1944-1956"
+        assert meta.year is None
+
+    def test_iron_curtain_full_title_by_author(self):
+        """Full book title with 'by Author' and year range preserved."""
+        meta = parse_title_folder(
+            "Iron Curtain The Crushing of Eastern Europe 1944-1956 by Anne Applebaum",
+            "Applebaum, Anne",
+            PATTERNS,
+        )
+        assert meta.author == "Applebaum, Anne"
+        assert meta.title == "Iron Curtain The Crushing of Eastern Europe 1944-1956"
+        assert meta.year is None
 
 
 # ── strip_author_from_title ──────────────────────────────────────────────

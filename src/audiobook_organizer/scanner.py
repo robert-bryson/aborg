@@ -51,6 +51,9 @@ _DUP_SUFFIX_RE = re.compile(r"\s*\(\d+\)$")
 # Cover-art filenames recognised by Audiobookshelf.
 COVER_NAMES = frozenset({"cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png"})
 
+# Top-level directories inside a collection that should never be treated as authors.
+_IGNORED_AUTHOR_DIRS = frozenset({"_new", "_raw_inputs", "_downloads"})
+
 
 @dataclass
 class ScanResult:
@@ -268,6 +271,9 @@ def scan_collection(
             continue
 
         if root_entry.name.startswith("."):
+            continue
+
+        if root_entry.name in _IGNORED_AUTHOR_DIRS:
             continue
 
         author_name = root_entry.name
