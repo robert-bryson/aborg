@@ -1,8 +1,12 @@
 """Tests for audiobook_organizer.cli — CLI smoke tests."""
 
+from pathlib import Path
+from unittest.mock import patch
+
 from click.testing import CliRunner
 
-from audiobook_organizer.cli import cli
+from audiobook_organizer.cli import _offer_source_cleanup, cli
+from audiobook_organizer.config import Config
 
 
 class TestCLI:
@@ -64,3 +68,108 @@ class TestCLI:
         result = CliRunner().invoke(cli, ["undo"])
         assert result.exit_code == 0
         assert "Nothing to undo" in result.output
+
+
+class TestOfferSourceCleanup:
+    """Tests for _offer_source_cleanup after org moves/copies."""
+
+    def _write(self, path: Path, data: bytes = b"\x00" * 64) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return path
+
+    def test_move_cleans_empty_parent(self, tmp_path):
+        """After moving a dir out, its empty parent is offered for cleanup."""
+        source_dir = tmp_path / "downloads"
+        source_dir.mkdir()
+        # Simulate: item was at downloads/batch/Author - Title/ and was moved
+        batch = source_dir / "batch"
+        batch.mkdir()
+        # batch is now empty (audiobook was moved out)
+
+        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+        moved = [batch / "Author - Title"]  # this path no longer exists
+
+        with patch("audiobook_organizer.cli.click.confirm", return_value=True):
+            _offer_source_cleanup(moved, cfg, copy=False)
+
+        assert not batch.exists()
+
+    def test_move_no_cleanup_when_parent_not_empty(self, tmp_path):
+        """Non-empty parent directories are not offered for cleanup."""
+        source_dir = tmp_path / "downloads"
+        batch = source_dir / "batch"
+        self._write(batch / "other_file.txt")
+        # Simulate moved item
+        moved = [batch / "Author - Title"]
+
+        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+
+        with patch("audiobook_organizer.cli.click.confirm", return_value=True):
+            _offer_source_cleanup(moved, cfg, copy=False)
+
+        # batch still exists because it has other_file.txt
+        assert batch.exists()
+
+    def test_move_does_not_delete_source_dir(self, tmp_path):
+        """Source dirs themselves are never deleted, even if empty."""
+        source_dir = tmp_path / "downloads"
+        source_dir.mkdir()
+
+        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+        # Item was directly inside source_dir
+        moved = [source_dir / "book.m4b"]
+
+        with patch("audiobook_organizer.cli.click.confirm", return_value=True):
+            _offer_source_cleanup(moved, cfg, copy=False)
+
+        assert source_dir.exists()
+
+    def test_copy_deletes_originals(self, tmp_path):
+        """After copying, originals are offered for deletion."""
+        source_dir = tmp_path / "downloads"
+        src_file = self._write(source_dir / "book.m4b")
+
+        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+
+        with patch("audiobook_organizer.cli.click.confirm", return_value=True):
+            _offer_source_cleanup([src_file], cfg, copy=True)
+
+        assert not src_file.exists()
+
+    def test_copy_cleanup_declined(self, tmp_path):
+        """Declining cleanup leaves source files intact."""
+        source_dir = tmp_path / "downloads"
+        src_file = self._write(source_dir / "book.m4b")
+
+        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+
+        with patch("audiobook_organizer.cli.click.confirm", return_value=False):
+            _offer_source_cleanup([src_file], cfg, copy=True)
+
+        assert src_file.exists()
+
+    def test_move_walks_up_nested_empty_dirs(self, tmp_path):
+        """Cleanup walks up through multiple levels of empty dirs."""
+        source_dir = tmp_path / "downloads"
+        deep = source_dir / "a" / "b" / "c"
+        deep.mkdir(parents=True)
+        # a/b/c is empty, a/b is empty, a is empty
+
+        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+        moved = [deep / "Some Book"]
+
+        with patch("audiobook_organizer.cli.click.confirm", return_value=True):
+            _offer_source_cleanup(moved, cfg, copy=False)
+
+        assert not (source_dir / "a").exists()
+
+    def test_no_cleanup_for_empty_moved_list(self, tmp_path):
+        """No prompt when nothing was moved."""
+        source_dir = tmp_path / "downloads"
+        source_dir.mkdir()
+        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+
+        with patch("audiobook_organizer.cli.click.confirm") as mock_confirm:
+            _offer_source_cleanup([], cfg, copy=False)
+            mock_confirm.assert_not_called()

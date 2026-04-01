@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import platform
 import re
+import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -414,6 +415,7 @@ def org(
     done = 0
     skipped = 0
     failed = 0
+    moved_sources: list[Path] = []
     with console.status(f"[bold green]{verb}…[/bold green]", spinner="dots") as status:
         for i, item in enumerate(items, 1):
             dest_full = cfg.destination / item.meta.dest_relative(author_format=cfg.author_name_format)
@@ -424,6 +426,7 @@ def org(
             result = organize([item], cfg, dry_run=dry_run, copy=copy)
             if result:
                 done += len(result)
+                moved_sources.append(item.path)
                 console.print(
                     f"  [green]✓[/green] [dim]{i}.[/dim] {item.meta.author} — {item.meta.title}"
                 )
@@ -446,6 +449,70 @@ def org(
     if missing_dirs:
         summary.add_row("Missing source dirs", f"[red]{len(missing_dirs)}[/red]")
     console.print(summary)
+
+    if not dry_run and moved_sources:
+        _offer_source_cleanup(moved_sources, cfg, copy=copy)
+
+
+def _offer_source_cleanup(
+    moved_sources: list[Path],
+    cfg: Config,
+    *,
+    copy: bool,
+) -> None:
+    """After organizing, offer to clean up source paths."""
+    cleanup_paths: list[Path] = []
+    source_dir_resolved = {sd.resolve() for sd in cfg.source_dirs}
+
+    if copy:
+        # For copies, offer to delete the originals
+        for src in moved_sources:
+            if src.exists():
+                cleanup_paths.append(src)
+    else:
+        # For moves, find empty parent directories left behind
+        seen: set[Path] = set()
+        planned: set[Path] = set()
+        for src in moved_sources:
+            parent = src.parent
+            while parent.exists() and parent.resolve() not in source_dir_resolved:
+                if parent in seen:
+                    break
+                seen.add(parent)
+                children = set(parent.iterdir()) - planned
+                if parent.is_dir() and not children:
+                    cleanup_paths.append(parent)
+                    planned.add(parent)
+                    parent = parent.parent
+                else:
+                    break
+
+    if not cleanup_paths:
+        return
+
+    # Sort deepest first so nested dirs are removed before parents
+    cleanup_paths.sort(key=lambda p: len(p.parts), reverse=True)
+
+    action = "Delete copied originals" if copy else "Remove empty source directories"
+    console.print(f"\n[bold]{action}[/bold]")
+    for p in cleanup_paths:
+        console.print(f"  [dim]•[/dim] {p}")
+
+    if not click.confirm(f"\nClean up {len(cleanup_paths)} path(s)?"):
+        return
+
+    removed = 0
+    for p in cleanup_paths:
+        try:
+            if p.is_dir():
+                shutil.rmtree(p)
+            elif p.is_file():
+                p.unlink()
+            removed += 1
+            console.print(f"  [red]✗[/red] {p}")
+        except OSError as exc:
+            console.print(f"  [red]Error:[/red] {p}: {exc}")
+    console.print(f"[green]Cleaned up {removed} path(s).[/green]")
 
 
 # ── fetch (Libby / OverDrive) ───────────────────────────────────────────
