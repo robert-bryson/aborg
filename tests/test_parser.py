@@ -8,11 +8,16 @@ import pytest
 from audiobook_organizer.parser import (
     AudiobookMeta,
     _clean_tag_title,
+    _extract_narrator,
     _parse_title_remainder,
     _sanitize,
     _strip_author_from_name,
+    _strip_embedded_year,
+    flip_author_name,
+    is_last_first,
     looks_like_author,
     merge_meta,
+    normalize_author_format,
     normalize_path_name,
     parse_audio_tags,
     parse_filename,
@@ -22,15 +27,10 @@ from audiobook_organizer.parser import (
     path_parent_name,
     strip_author_from_title,
 )
+from audiobook_organizer.config import Config
 
 # Patterns used in tests (same as the defaults shipped in config.yaml)
-PATTERNS = [
-    r"(?P<author>.+?) - (?P<series>.+?)\s*(?:Book|Vol\.?|Volume)\s*(?P<sequence>\d+)"
-    r"\s*-\s*(?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*\[(?P<narrator>.+?)\])?$",
-    r"(?P<author>.+?) - (?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*\[(?P<narrator>.+?)\])?$",
-    r"(?P<title>.+?) - (?P<author>.+?)(?:\s*\((?P<year>\d{4})\))?$",
-    r"(?P<author>[^_]+)_(?P<title>.+)$",
-]
+PATTERNS = list(Config.DEFAULT_PATTERNS)
 
 # ── _sanitize ────────────────────────────────────────────────────────────
 
@@ -1050,3 +1050,132 @@ class TestParseMetadataJsonFromZip:
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("metadata/metadata.json", "not json")
         assert parse_metadata_json_from_zip(zip_path) is None
+
+
+# ── _strip_embedded_year ─────────────────────────────────────────────────
+
+
+class TestStripEmbeddedYear:
+    def test_trailing_dash_year(self):
+        assert _strip_embedded_year("I, Robot - 1950", "1950") == "I, Robot"
+
+    def test_trailing_paren_year(self):
+        assert _strip_embedded_year("Foundation (1951)", "1951") == "Foundation"
+
+    def test_leading_year(self):
+        assert _strip_embedded_year("1951 - Foundation", "1951") == "Foundation"
+
+    def test_leading_paren_year(self):
+        assert _strip_embedded_year("(1951) - Foundation", "1951") == "Foundation"
+
+    def test_no_match_different_year(self):
+        assert _strip_embedded_year("I, Robot - 1950", "1951") == "I, Robot - 1950"
+
+    def test_no_match_no_year(self):
+        assert _strip_embedded_year("Foundation", "1951") == "Foundation"
+
+    def test_year_range_preserved(self):
+        """Year ranges like 1944-1956 must not be broken."""
+        assert (
+            _strip_embedded_year("The Crushing of Eastern Europe, 1944-1956", "1956")
+            == "The Crushing of Eastern Europe, 1944-1956"
+        )
+
+    def test_title_is_only_year(self):
+        """If stripping would leave an empty title, return original."""
+        assert _strip_embedded_year("1951", "1951") == "1951"
+
+
+class TestDestFolderNameYearDedup:
+    """Ensure dest_folder_name doesn't duplicate the year."""
+
+    def test_no_duplication_when_year_in_title(self):
+        meta = AudiobookMeta(title="I, Robot - 1950", year="1950")
+        assert meta.dest_folder_name() == "1950 - I, Robot"
+
+    def test_no_duplication_with_paren_year_in_title(self):
+        meta = AudiobookMeta(title="Foundation (1951)", year="1951")
+        assert meta.dest_folder_name() == "1951 - Foundation"
+
+    def test_no_duplication_book_number_and_year_in_title(self):
+        meta = AudiobookMeta(title="Book 1 - Foundation - 1951", year="1951")
+        assert meta.dest_folder_name() == "1951 - Book 1 - Foundation"
+
+    def test_normal_case_still_works(self):
+        meta = AudiobookMeta(title="Foundation", year="1951")
+        assert meta.dest_folder_name() == "1951 - Foundation"
+
+
+# ── _extract_narrator ────────────────────────────────────────────────────
+
+
+class TestExtractNarrator:
+    def test_curly_braces(self):
+        narrator, text = _extract_narrator("Foundation {Scott Brick}")
+        assert narrator == "Scott Brick"
+        assert text == "Foundation"
+
+    def test_square_brackets(self):
+        narrator, text = _extract_narrator("Foundation [Scott Brick]")
+        assert narrator == "Scott Brick"
+        assert text == "Foundation"
+
+    def test_no_narrator(self):
+        narrator, text = _extract_narrator("Foundation")
+        assert narrator is None
+        assert text == "Foundation"
+
+
+# ── is_last_first / flip_author_name / normalize_author_format ───────────
+
+
+class TestAuthorFormatHelpers:
+    def test_is_last_first(self):
+        assert is_last_first("Applebaum, Anne") is True
+        assert is_last_first("Austen, Jane") is True
+        assert is_last_first("Candice Millard") is False
+        assert is_last_first("E. B. White") is False
+
+    def test_flip_last_first(self):
+        assert flip_author_name("Applebaum, Anne") == "Anne Applebaum"
+
+    def test_flip_first_last(self):
+        assert flip_author_name("Candice Millard") == "Millard, Candice"
+        assert flip_author_name("E. B. White") == "White, E. B."
+
+    def test_single_word_unchanged(self):
+        assert flip_author_name("Plato") == "Plato"
+
+    def test_normalize_last_first(self):
+        assert normalize_author_format("Candice Millard", "last_first") == "Millard, Candice"
+        assert normalize_author_format("Applebaum, Anne", "last_first") == "Applebaum, Anne"
+
+    def test_normalize_first_last(self):
+        assert normalize_author_format("Applebaum, Anne", "first_last") == "Anne Applebaum"
+        assert normalize_author_format("Candice Millard", "first_last") == "Candice Millard"
+
+    def test_normalize_unknown_author_unchanged(self):
+        assert normalize_author_format("Unknown Author", "last_first") == "Unknown Author"
+
+    def test_normalize_empty(self):
+        assert normalize_author_format("", "last_first") == ""
+
+
+# ── dest_relative with author_format ─────────────────────────────────────
+
+
+class TestDestRelativeAuthorFormat:
+    def test_last_first_format(self):
+        meta = AudiobookMeta(author="Candice Millard", title="River of the Gods")
+        result = meta.dest_relative(author_format="last_first")
+        assert result == Path("Millard, Candice/River of the Gods")
+
+    def test_first_last_format(self):
+        meta = AudiobookMeta(author="Applebaum, Anne", title="Red Famine")
+        result = meta.dest_relative(author_format="first_last")
+        assert result == Path("Anne Applebaum/Red Famine")
+
+    def test_no_format_uses_raw(self):
+        meta = AudiobookMeta(author="Candice Millard", title="River of the Gods")
+        result = meta.dest_relative()
+        assert result == Path("Candice Millard/River of the Gods")

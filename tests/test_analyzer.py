@@ -5,11 +5,10 @@ from pathlib import Path
 from audiobook_organizer.analyzer import (
     FixAction,
     _check_metadata_quality,
-    _flip_author_name,
-    _is_last_first,
     analyze_collection,
     apply_fixes,
 )
+from audiobook_organizer.parser import flip_author_name, is_last_first
 from audiobook_organizer.config import Config
 from audiobook_organizer.parser import AudiobookMeta
 from audiobook_organizer.scanner import ScanResult
@@ -162,18 +161,18 @@ class TestApplyFixes:
 
 class TestAuthorNameFormat:
     def test_is_last_first(self):
-        assert _is_last_first("Applebaum, Anne") is True
-        assert _is_last_first("Austen, Jane") is True
-        assert _is_last_first("Candice Millard") is False
-        assert _is_last_first("E. B. White") is False
+        assert is_last_first("Applebaum, Anne") is True
+        assert is_last_first("Austen, Jane") is True
+        assert is_last_first("Candice Millard") is False
+        assert is_last_first("E. B. White") is False
 
     def test_flip_last_first_to_first_last(self):
-        assert _flip_author_name("Applebaum, Anne") == "Anne Applebaum"
-        assert _flip_author_name("Austen, Jane") == "Jane Austen"
+        assert flip_author_name("Applebaum, Anne") == "Anne Applebaum"
+        assert flip_author_name("Austen, Jane") == "Jane Austen"
 
     def test_flip_first_last_to_last_first(self):
-        assert _flip_author_name("Candice Millard") == "Millard, Candice"
-        assert _flip_author_name("E. B. White") == "White, E. B."
+        assert flip_author_name("Candice Millard") == "Millard, Candice"
+        assert flip_author_name("E. B. White") == "White, E. B."
 
     def test_flags_first_last_when_config_is_last_first(self, tmp_path):
         """Default config (last_first) should flag 'First Last' authors."""

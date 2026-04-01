@@ -25,7 +25,7 @@ def organize(
     actions: list[tuple[Path, Path]] = []
 
     for item in items:
-        dest_rel = item.meta.dest_relative()
+        dest_rel = item.meta.dest_relative(author_format=cfg.author_name_format)
         dest_dir = cfg.destination / dest_rel
 
         if item.kind == "archive" and cfg.auto_extract:
@@ -145,11 +145,8 @@ def undo_last(cfg: Config, *, dry_run: bool = False) -> list[tuple[Path, Path]]:
         _, src_str, dest_str = line.split("\t")
         src, dest = Path(src_str), Path(dest_str)
         if not dry_run and dest.exists():
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if dest.is_dir():
-                shutil.move(str(dest), str(src))
-            else:
-                shutil.move(str(dest), str(src))
+            src.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(dest), str(src))
         undone.append((dest, src))
 
     if not dry_run:

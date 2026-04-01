@@ -8,6 +8,8 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from difflib import SequenceMatcher
+
 from mutagen import File as MutagenFile
 from mutagen import MutagenError
 
@@ -45,17 +47,23 @@ class AudiobookMeta:
         parts: list[str] = []
         if self.sequence and self.series:
             parts.append(f"Vol {self.sequence}")
+        title = self.title
         if self.year:
             parts.append(self.year)
-        parts.append(self.title)
+            # Avoid duplicating the year when it's already embedded in the title
+            title = _strip_embedded_year(title, self.year)
+        parts.append(title)
         folder = " - ".join(parts)
         if self.narrator:
             folder += f" {{{self.narrator}}}"
         return _sanitize(folder)
 
-    def dest_relative(self) -> Path:
+    def dest_relative(self, *, author_format: str = "") -> Path:
         """Return the relative destination path: ``Author[/Series]/TitleFolder``."""
-        author_dir = _sanitize(self.author)
+        author = self.author
+        if author_format:
+            author = normalize_author_format(author, author_format)
+        author_dir = _sanitize(author)
         title_dir = self.dest_folder_name()
         if self.series:
             series_dir = _sanitize(self.series)
@@ -70,6 +78,54 @@ def _sanitize(name: str) -> str:
     # Collapse multiple spaces/dots, strip trailing dots/spaces
     name = re.sub(r"\s{2,}", " ", name).strip(". ")
     return name or "Unknown"
+
+
+def _strip_embedded_year(title: str, year: str) -> str:
+    """Remove *year* from *title* when it appears as a leading/trailing component."""
+    # Trailing " - YYYY" (with negative lookbehind to preserve year ranges like 1944-1956)
+    m = re.search(rf"(?<!\d)\s*[-\u2013\u2014]\s*{re.escape(year)}\s*$", title)
+    if m:
+        return title[: m.start()].strip() or title
+    # Trailing " (YYYY)"
+    m = re.search(rf"\s*\({re.escape(year)}\)\s*$", title)
+    if m:
+        return title[: m.start()].strip() or title
+    # Leading "YYYY - "
+    m = re.match(rf"^{re.escape(year)}\s*[-\u2013\u2014]\s+", title)
+    if m:
+        return title[m.end() :].strip() or title
+    # Leading "(YYYY) - "
+    m = re.match(rf"^\({re.escape(year)}\)\s*[-\u2013\u2014]\s*", title)
+    if m:
+        return title[m.end() :].strip() or title
+    return title
+
+
+def is_last_first(name: str) -> bool:
+    """Return True if *name* looks like 'Last, First' format."""
+    return bool(re.match(r'^[^,]+,\s*.+', name))
+
+
+def flip_author_name(name: str) -> str:
+    """Convert 'Last, First' to 'First Last' or vice versa."""
+    if is_last_first(name):
+        last, first = name.split(',', 1)
+        return f"{first.strip()} {last.strip()}"
+    parts = name.rsplit(None, 1)
+    if len(parts) == 2:
+        return f"{parts[1]}, {parts[0]}"
+    return name
+
+
+def normalize_author_format(name: str, fmt: str) -> str:
+    """Normalize author name to the given format ('last_first' or 'first_last')."""
+    if not name or name == "Unknown Author":
+        return name
+    if fmt == "last_first" and not is_last_first(name):
+        return flip_author_name(name)
+    if fmt == "first_last" and is_last_first(name):
+        return flip_author_name(name)
+    return name
 
 
 def looks_like_author(name: str) -> bool:
@@ -165,8 +221,6 @@ def _strip_author_from_name(name: str, known_author: str) -> str | None:
     Uses fuzzy matching (>0.8 similarity) to handle typos and name-format
     differences.  Returns the cleaned remainder, or *None* if no match.
     """
-    from difflib import SequenceMatcher
-
     segments = _SEP_RE.split(name)
     if len(segments) < 2:
         return None
@@ -180,6 +234,21 @@ def _strip_author_from_name(name: str, known_author: str) -> str | None:
                 result = " - ".join(remaining).strip()
                 return result if result else None
     return None
+
+
+def _extract_narrator(text: str) -> tuple[str | None, str]:
+    """Extract narrator from trailing ``{braces}`` or ``[brackets]``.
+
+    Returns ``(narrator, cleaned_text)``.
+    """
+    m = re.search(r"\{(.+?)\}\s*$", text)
+    if not m:
+        m = re.search(r"\[([^\]]+)\]\s*$", text)
+    if m:
+        narrator = m.group(1).strip()
+        cleaned = text[: m.start()].strip(" -\u2013\u2014")
+        return narrator, cleaned
+    return None, text
 
 
 def _parse_title_remainder(text: str) -> AudiobookMeta:
@@ -197,12 +266,9 @@ def _parse_title_remainder(text: str) -> AudiobookMeta:
         return meta
 
     # ── Step 1: extract narrator from {curly braces} or [square brackets] ──
-    m_narrator = re.search(r"\{(.+?)\}\s*$", text)
-    if not m_narrator:
-        m_narrator = re.search(r"\[([^\]]+)\]\s*$", text)
-    if m_narrator:
-        meta.narrator = m_narrator.group(1).strip()
-        text = text[: m_narrator.start()].strip(" -\u2013\u2014")
+    narrator, text = _extract_narrator(text)
+    if narrator:
+        meta.narrator = narrator
 
     if not text:
         return meta
@@ -295,8 +361,6 @@ def _parse_title_remainder(text: str) -> AudiobookMeta:
 
 def _strip_by_author(text: str, known_author: str) -> str:
     """Remove a trailing ``by Author Name`` from *text* using fuzzy matching."""
-    from difflib import SequenceMatcher
-
     m = re.search(r"\s+by\s+(.+)$", text, re.IGNORECASE)
     if not m:
         return text
@@ -322,14 +386,7 @@ def parse_title_folder(
     """
     # Pre-extract narrator from {braces} or [brackets] so it doesn't
     # interfere with author-segment fuzzy matching.
-    narrator = None
-    clean_name = name
-    m_narrator = re.search(r"\{(.+?)\}\s*$", name)
-    if not m_narrator:
-        m_narrator = re.search(r"\[([^\]]+)\]\s*$", name)
-    if m_narrator:
-        narrator = m_narrator.group(1).strip()
-        clean_name = name[: m_narrator.start()].strip(" -\u2013\u2014")
+    narrator, clean_name = _extract_narrator(name)
 
     # Strip noise parentheticals early so they don't interfere.
     clean_name = _NOISE_PAREN_RE.sub("", clean_name).strip()

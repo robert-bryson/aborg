@@ -6,13 +6,7 @@ from audiobook_organizer.config import Config
 AUDIO_EXTS = frozenset({".m4b", ".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wma", ".aac"})
 ARCHIVE_EXTS = frozenset({".zip", ".rar", ".7z"})
 COMPANION_EXTS = frozenset({".jpg", ".jpeg", ".png", ".pdf", ".epub", ".nfo", ".cue", ".txt", ".opf"})
-PATTERNS = [
-    r"(?P<author>.+?) - (?P<series>.+?)\s*(?:Book|Vol\.?|Volume)\s*(?P<sequence>\d+)"
-    r"\s*-\s*(?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*\[(?P<narrator>.+?)\])?$",
-    r"(?P<author>.+?) - (?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*\[(?P<narrator>.+?)\])?$",
-    r"(?P<title>.+?) - (?P<author>.+?)(?:\s*\((?P<year>\d{4})\))?$",
-    r"(?P<author>[^_]+)_(?P<title>.+)$",
-]
+PATTERNS = list(Config.DEFAULT_PATTERNS)
 
 
 def make_cfg(**overrides) -> Config:

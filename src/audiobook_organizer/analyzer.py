@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from .cache import ScanCache
 
 from .config import Config
-from .parser import looks_like_author
+from .parser import flip_author_name, is_last_first, looks_like_author
 from .scanner import CollectionScan, ScanResult, scan_collection
 
 
@@ -150,8 +150,11 @@ def _check_duplicates(items: list[ScanResult], report: AnalysisReport) -> None:
         by_author[item.meta.author.lower()].append(item)
 
     for author_items in by_author.values():
-        for i, a in enumerate(author_items):
-            for b in author_items[i + 1 :]:
+        n = len(author_items)
+        for i in range(n):
+            a = author_items[i]
+            for j in range(i + 1, n):
+                b = author_items[j]
                 ratio = SequenceMatcher(None, a.meta.title.lower(), b.meta.title.lower()).ratio()
                 if ratio > 0.85:
                     report.duplicates.append((a, b))
@@ -230,20 +233,7 @@ def _check_missing_covers(items: list[ScanResult], report: AnalysisReport) -> No
             )
 
 
-def _is_last_first(name: str) -> bool:
-    """Return True if *name* looks like 'Last, First' format."""
-    return bool(re.match(r'^[^,]+,\s*.+', name))
-
-
-def _flip_author_name(name: str) -> str:
-    """Convert 'Last, First' to 'First Last' or vice versa."""
-    if _is_last_first(name):
-        last, first = name.split(',', 1)
-        return f"{first.strip()} {last.strip()}"
-    parts = name.rsplit(None, 1)
-    if len(parts) == 2:
-        return f"{parts[1]}, {parts[0]}"
-    return name
+# _is_last_first and _flip_author_name are imported from parser.
 
 
 def _check_author_name_format(
@@ -263,10 +253,10 @@ def _check_author_name_format(
             author_dirs[author] = root / item.path.relative_to(root).parts[0]
 
     for author in sorted(author_dirs):
-        is_lf = _is_last_first(author)
+        is_lf = is_last_first(author)
         if is_lf == prefer_last_first:
             continue  # Already in the preferred format
-        suggested = _flip_author_name(author)
+        suggested = flip_author_name(author)
         if suggested == author:
             continue  # Can't meaningfully flip (e.g. single-word name)
         author_dir = author_dirs[author]

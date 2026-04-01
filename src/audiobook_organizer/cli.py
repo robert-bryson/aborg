@@ -5,6 +5,8 @@ from __future__ import annotations
 import platform
 import re
 import subprocess
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import click
@@ -35,7 +37,7 @@ from .parser import (
     path_parent_name,
     strip_author_from_title,
 )
-from .scanner import scan_collection, scan_sources
+from .scanner import ScanResult, scan_collection, scan_sources
 
 console = Console()
 
@@ -46,6 +48,62 @@ def _human_size(size: int) -> str:
             return f"{size:.1f} {unit}"
         size /= 1024  # type: ignore[assignment]
     return f"{size:.1f} PB"
+
+
+@dataclass
+class _ScanCounters:
+    """Mutable counters shared between the hit callback and calling code."""
+    count: int = 0
+    new_count: int = 0
+    exist_count: int = 0
+    current_source_dir: Path | None = None
+
+
+def _make_hit_callback(
+    cfg: Config, counters: _ScanCounters,
+) -> Callable[[ScanResult], None]:
+    """Build a scan-hit callback that prints each discovered book."""
+    author_fmt = cfg.author_name_format
+
+    def _on_hit(result: ScanResult) -> None:
+        counters.count += 1
+        if result.source_dir != counters.current_source_dir:
+            counters.current_source_dir = result.source_dir
+            console.print(f"\n[bold cyan]\u2500\u2500 {result.source_dir} \u2500\u2500[/bold cyan]")
+        dest_rel = result.meta.dest_relative(author_format=author_fmt)
+        dest_full = cfg.destination / dest_rel
+        exists = dest_full.exists()
+        if exists:
+            counters.exist_count += 1
+            tag = "[yellow] EXISTS [/yellow]"
+        else:
+            counters.new_count += 1
+            tag = "[green]    NEW [/green]"
+        series = ""
+        if result.meta.series:
+            seq = result.meta.sequence or "?"
+            series = f"  [dim]({result.meta.series} #{seq})[/dim]"
+        console.print(
+            f"{tag} [dim]{counters.count:>3}.[/dim]"
+            f" [bold]{result.meta.author}[/bold] \u2014"
+            f" {result.meta.title}{series}"
+            f"  [dim]{_human_size(result.size)}[/dim]"
+            f"  [blue]\u2192 {dest_rel}[/blue]"
+        )
+
+    return _on_hit
+
+
+def _print_missing_dirs(missing_dirs: list[Path]) -> None:
+    """Print warnings for source directories that don't exist."""
+    if not missing_dirs:
+        return
+    console.print()
+    for d in missing_dirs:
+        console.print(f"[red bold]\u26a0 Source directory not found:[/red bold] {d}")
+        hint = _check_wsl_mount(d)
+        if hint:
+            console.print(f"[yellow]  {hint}[/yellow]")
 
 
 def _print_books_table(report: AnalysisReport) -> None:
@@ -200,59 +258,24 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, cache: bo
     console.print(f"[dim]Scanning: {', '.join(str(d) for d in cfg.source_dirs)}[/dim]")
     console.print(f"[dim]Destination: {cfg.destination}[/dim]\n")
 
-    count = 0
-    new_count = 0
-    exist_count = 0
-    current_source_dir: Path | None = None
+    counters = _ScanCounters()
 
     with console.status("[bold green]Scanning…[/bold green]", spinner="dots") as status:
 
         def _on_progress(msg: str) -> None:
             status.update(f"[bold green]Scanning:[/bold green] {msg}")
 
-        def _on_hit(result: object) -> None:
-            nonlocal count, new_count, exist_count, current_source_dir
-            count += 1
-            if result.source_dir != current_source_dir:
-                current_source_dir = result.source_dir
-                console.print(f"\n[bold cyan]── {current_source_dir} ──[/bold cyan]")
-            dest_full = cfg.destination / result.meta.dest_relative()
-            exists = dest_full.exists()
-            if exists:
-                exist_count += 1
-                tag = "[yellow] EXISTS [/yellow]"
-            else:
-                new_count += 1
-                tag = "[green]    NEW [/green]"
-            series = ""
-            if result.meta.series:
-                seq = result.meta.sequence or "?"
-                series = f"  [dim]({result.meta.series} #{seq})[/dim]"
-            console.print(
-                f"{tag} [dim]{count:>3}.[/dim]"
-                f" [bold]{result.meta.author}[/bold] —"
-                f" {result.meta.title}{series}"
-                f"  [dim]{_human_size(result.size)}[/dim]"
-                f"  [blue]→ {result.meta.dest_relative()}[/blue]"
-            )
-
         items, missing_dirs = scan_sources(
             cfg,
             on_progress=_on_progress,
-            on_hit=_on_hit,
+            on_hit=_make_hit_callback(cfg, counters),
             cache=scan_cache,
         )
 
     if scan_cache:
         scan_cache.save()
 
-    if missing_dirs:
-        console.print()
-        for d in missing_dirs:
-            console.print(f"[red bold]⚠ Source directory not found:[/red bold] {d}")
-            hint = _check_wsl_mount(d)
-            if hint:
-                console.print(f"[yellow]  {hint}[/yellow]")
+    _print_missing_dirs(missing_dirs)
 
     if not items:
         if not missing_dirs:
@@ -269,8 +292,8 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, cache: bo
     summary.add_column("Metric", style="bold")
     summary.add_column("Value", justify="right")
     summary.add_row("Found", f"{len(items)} audiobook(s)")
-    summary.add_row("New", f"[green]{new_count}[/green]")
-    summary.add_row("Already in collection", f"[yellow]{exist_count}[/yellow]")
+    summary.add_row("New", f"[green]{counters.new_count}[/green]")
+    summary.add_row("Already in collection", f"[yellow]{counters.exist_count}[/yellow]")
     summary.add_row("Authors", str(authors))
     summary.add_row("Total size", _human_size(total_size))
     if missing_dirs:
@@ -293,7 +316,7 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, cache: bo
                 item.meta.title,
                 f"{item.meta.series} #{item.meta.sequence}" if item.meta.series else "",
                 _human_size(item.size),
-                str(item.meta.dest_relative()),
+                str(item.meta.dest_relative(author_format=cfg.author_name_format)),
             )
 
         console.print(tbl)
@@ -331,59 +354,24 @@ def org(
     console.print(f"[dim]Scanning: {', '.join(str(d) for d in cfg.source_dirs)}[/dim]")
     console.print(f"[dim]Destination: {cfg.destination}[/dim]\n")
 
-    count = 0
-    new_count = 0
-    exist_count = 0
-    current_source_dir: Path | None = None
+    counters = _ScanCounters()
 
     with console.status("[bold green]Scanning…[/bold green]", spinner="dots") as status:
 
         def _org_progress(msg: str) -> None:
             status.update(f"[bold green]Scanning:[/bold green] {msg}")
 
-        def _org_hit(result: object) -> None:
-            nonlocal count, new_count, exist_count, current_source_dir
-            count += 1
-            if result.source_dir != current_source_dir:
-                current_source_dir = result.source_dir
-                console.print(f"\n[bold cyan]── {current_source_dir} ──[/bold cyan]")
-            dest_full = cfg.destination / result.meta.dest_relative()
-            exists = dest_full.exists()
-            if exists:
-                exist_count += 1
-                tag = "[yellow] EXISTS [/yellow]"
-            else:
-                new_count += 1
-                tag = "[green]    NEW [/green]"
-            series = ""
-            if result.meta.series:
-                seq = result.meta.sequence or "?"
-                series = f"  [dim]({result.meta.series} #{seq})[/dim]"
-            console.print(
-                f"{tag} [dim]{count:>3}.[/dim]"
-                f" [bold]{result.meta.author}[/bold] —"
-                f" {result.meta.title}{series}"
-                f"  [dim]{_human_size(result.size)}[/dim]"
-                f"  [blue]→ {result.meta.dest_relative()}[/blue]"
-            )
-
         items, missing_dirs = scan_sources(
             cfg,
             on_progress=_org_progress,
-            on_hit=_org_hit,
+            on_hit=_make_hit_callback(cfg, counters),
             cache=scan_cache,
         )
 
     if scan_cache:
         scan_cache.save()
 
-    if missing_dirs:
-        console.print()
-        for d in missing_dirs:
-            console.print(f"[red bold]⚠ Source directory not found:[/red bold] {d}")
-            hint = _check_wsl_mount(d)
-            if hint:
-                console.print(f"[yellow]  {hint}[/yellow]")
+    _print_missing_dirs(missing_dirs)
 
     if not items:
         if not missing_dirs:
@@ -396,7 +384,7 @@ def org(
     authors = len({i.meta.author for i in items})
 
     prefix = "DRY RUN — " if dry_run else ""
-    prompt = f"\n{prefix}Organize {new_count} new item(s)?"
+    prompt = f"\n{prefix}Organize {counters.new_count} new item(s)?"
     if not dry_run and not yes and not click.confirm(prompt):
         console.print("[yellow]Aborted.[/yellow]")
         return
@@ -428,7 +416,7 @@ def org(
     failed = 0
     with console.status(f"[bold green]{verb}…[/bold green]", spinner="dots") as status:
         for i, item in enumerate(items, 1):
-            dest_full = cfg.destination / item.meta.dest_relative()
+            dest_full = cfg.destination / item.meta.dest_relative(author_format=cfg.author_name_format)
             if dest_full.exists():
                 skipped += 1
                 continue
@@ -917,7 +905,7 @@ def parse(ctx: click.Context, filename: str) -> None:
     table.add_row("Year", merged.year or "—")
     table.add_row("Narrator", merged.narrator or "—")
     table.add_row("Dest folder", merged.dest_folder_name())
-    table.add_row("Dest path", str(merged.dest_relative()))
+    table.add_row("Dest path", str(merged.dest_relative(author_format=cfg.author_name_format)))
     console.print(table)
 
 
