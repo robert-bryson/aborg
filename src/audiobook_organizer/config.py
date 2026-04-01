@@ -24,6 +24,9 @@ class Config:
     min_file_size: int = 0
     move_log: Path = field(default_factory=lambda: Path())
 
+    # Author name format: "last_first" (Austen, Jane) or "first_last" (Jane Austen)
+    author_name_format: str = "last_first"
+
     # Libby / odmpy integration
     libby_settings: Path = field(default_factory=lambda: Path())
     libby_merge: bool = False
@@ -99,6 +102,10 @@ class Config:
             kwargs["min_file_size"] = int(raw["min_file_size"])
         if "move_log" in raw:
             kwargs["move_log"] = Path(raw["move_log"]).expanduser()
+        if "author_name_format" in raw:
+            fmt = str(raw["author_name_format"]).strip().lower()
+            if fmt in ("last_first", "first_last"):
+                kwargs["author_name_format"] = fmt
 
         # Libby settings
         libby = raw.get("libby", {})

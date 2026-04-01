@@ -62,6 +62,21 @@ class TestConfigLoad:
         assert cfg.auto_extract is False
         assert cfg.delete_after_extract is False  # untouched
 
+    def test_load_author_name_format(self, tmp_path):
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(yaml.dump({"author_name_format": "first_last"}))
+        cfg = Config.load(cfg_file)
+        assert cfg.author_name_format == "first_last"
+
+    def test_default_author_name_format_is_last_first(self):
+        assert Config().author_name_format == "last_first"
+
+    def test_invalid_author_name_format_ignored(self, tmp_path):
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(yaml.dump({"author_name_format": "bogus"}))
+        cfg = Config.load(cfg_file)
+        assert cfg.author_name_format == "last_first"  # default preserved
+
 
 class TestConfigSave:
     def test_save_creates_file(self, tmp_path):

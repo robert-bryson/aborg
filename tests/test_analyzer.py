@@ -2,7 +2,13 @@
 
 from pathlib import Path
 
-from audiobook_organizer.analyzer import FixAction, analyze_collection, apply_fixes
+from audiobook_organizer.analyzer import (
+    FixAction,
+    _flip_author_name,
+    _is_last_first,
+    analyze_collection,
+    apply_fixes,
+)
 from audiobook_organizer.config import Config
 
 from .conftest import make_cfg
@@ -149,3 +155,76 @@ class TestApplyFixes:
         called = []
         apply_fixes(report, on_fix=lambda action, ok, err: called.append((action.kind, ok)))
         assert len(called) >= 1
+
+
+class TestAuthorNameFormat:
+    def test_is_last_first(self):
+        assert _is_last_first("Applebaum, Anne") is True
+        assert _is_last_first("Austen, Jane") is True
+        assert _is_last_first("Candice Millard") is False
+        assert _is_last_first("E. B. White") is False
+
+    def test_flip_last_first_to_first_last(self):
+        assert _flip_author_name("Applebaum, Anne") == "Anne Applebaum"
+        assert _flip_author_name("Austen, Jane") == "Jane Austen"
+
+    def test_flip_first_last_to_last_first(self):
+        assert _flip_author_name("Candice Millard") == "Millard, Candice"
+        assert _flip_author_name("E. B. White") == "White, E. B."
+
+    def test_flags_first_last_when_config_is_last_first(self, tmp_path):
+        """Default config (last_first) should flag 'First Last' authors."""
+        _make_audio(tmp_path / "Applebaum, Anne" / "Book A" / "audio.mp3")
+        _make_audio(tmp_path / "Candice Millard" / "Book D" / "audio.mp3")
+
+        cfg = make_cfg(author_name_format="last_first")
+        report = analyze_collection(tmp_path, cfg)
+        format_issues = [
+            i for i in report.issues
+            if "preferred format" in i.message
+        ]
+        assert len(format_issues) == 1
+        assert "Candice Millard" in format_issues[0].message
+        assert format_issues[0].fix is not None
+        assert format_issues[0].fix.target.name == "Millard, Candice"
+
+    def test_flags_last_first_when_config_is_first_last(self, tmp_path):
+        """Config set to first_last should flag 'Last, First' authors."""
+        _make_audio(tmp_path / "Jane Austen" / "Book A" / "audio.mp3")
+        _make_audio(tmp_path / "Applebaum, Anne" / "Book B" / "audio.mp3")
+
+        cfg = make_cfg(author_name_format="first_last")
+        report = analyze_collection(tmp_path, cfg)
+        format_issues = [
+            i for i in report.issues
+            if "preferred format" in i.message
+        ]
+        assert len(format_issues) == 1
+        assert "Applebaum, Anne" in format_issues[0].message
+        assert format_issues[0].fix.target.name == "Anne Applebaum"
+
+    def test_no_issue_when_all_match_config(self, tmp_path):
+        """All 'Last, First' with last_first config should produce no issues."""
+        _make_audio(tmp_path / "Applebaum, Anne" / "Book A" / "audio.mp3")
+        _make_audio(tmp_path / "Austen, Jane" / "Book B" / "audio.mp3")
+
+        cfg = make_cfg(author_name_format="last_first")
+        report = analyze_collection(tmp_path, cfg)
+        format_issues = [
+            i for i in report.issues
+            if "preferred format" in i.message
+        ]
+        assert len(format_issues) == 0
+
+    def test_fix_renames_author_dir(self, tmp_path):
+        """Auto-fix should rename author dir to match configured format."""
+        _make_audio(tmp_path / "Applebaum, Anne" / "Book A" / "audio.mp3")
+        _make_audio(tmp_path / "Candice Millard" / "Book D" / "audio.mp3")
+
+        cfg = make_cfg(author_name_format="last_first")
+        report = analyze_collection(tmp_path, cfg)
+        applied = apply_fixes(report)
+        rename_applied = [a for a in applied if a.target and a.target.name == "Millard, Candice"]
+        assert len(rename_applied) == 1
+        assert (tmp_path / "Millard, Candice").exists()
+        assert not (tmp_path / "Candice Millard").exists()

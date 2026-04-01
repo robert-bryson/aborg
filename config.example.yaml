@@ -66,6 +66,11 @@ filename_patterns:
   # Author_Title
   - '(?P<author>[^_]+)_(?P<title>.+)$'
 
+# Preferred author name format for folder names:
+#   last_first  → "Austen, Jane"  (library convention, default)
+#   first_last  → "Jane Austen"   (natural reading order)
+author_name_format: last_first
+
 # Minimum file size to consider (bytes) — skip tiny files
 min_file_size: 1048576  # 1 MB
 

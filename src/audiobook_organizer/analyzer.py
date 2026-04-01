@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -105,6 +106,8 @@ def analyze_collection(
     _check_missing_covers(items, report)
     _log("Checking naming conventions…")
     _check_naming_conventions(items, report)
+    _log("Checking author name format consistency…")
+    _check_author_name_format(items, root, cfg, report)
 
     return report
 
@@ -218,6 +221,62 @@ def _check_missing_covers(items: list[ScanResult], report: AnalysisReport) -> No
                     suggestion="Add a cover.jpg file",
                 )
             )
+
+
+def _is_last_first(name: str) -> bool:
+    """Return True if *name* looks like 'Last, First' format."""
+    return bool(re.match(r'^[^,]+,\s*.+', name))
+
+
+def _flip_author_name(name: str) -> str:
+    """Convert 'Last, First' to 'First Last' or vice versa."""
+    if _is_last_first(name):
+        last, first = name.split(',', 1)
+        return f"{first.strip()} {last.strip()}"
+    parts = name.rsplit(None, 1)
+    if len(parts) == 2:
+        return f"{parts[1]}, {parts[0]}"
+    return name
+
+
+def _check_author_name_format(
+    items: list[ScanResult], root: Path, cfg: Config, report: AnalysisReport,
+) -> None:
+    """Flag author folders that don't match the configured name format."""
+    prefer_last_first = cfg.author_name_format == "last_first"
+    preferred_label = "Last, First" if prefer_last_first else "First Last"
+
+    # Collect unique author dirs (author_name -> author_dir_path).
+    author_dirs: dict[str, Path] = {}
+    for item in items:
+        author = item.meta.author
+        if author == "Unknown Author" or not item.path:
+            continue
+        if author not in author_dirs:
+            author_dirs[author] = root / item.path.relative_to(root).parts[0]
+
+    for author in sorted(author_dirs):
+        is_lf = _is_last_first(author)
+        if is_lf == prefer_last_first:
+            continue  # Already in the preferred format
+        suggested = _flip_author_name(author)
+        if suggested == author:
+            continue  # Can't meaningfully flip (e.g. single-word name)
+        author_dir = author_dirs[author]
+        target_dir = author_dir.parent / suggested
+        report.issues.append(
+            Issue(
+                severity="warning",
+                category="naming",
+                message=(
+                    f"Author '{author}' doesn't match preferred format "
+                    f"({preferred_label})"
+                ),
+                path=author_dir,
+                suggestion=f"Rename to '{suggested}'",
+                fix=FixAction(kind="rename", source=author_dir, target=target_dir),
+            )
+        )
 
 
 def _check_naming_conventions(items: list[ScanResult], report: AnalysisReport) -> None:

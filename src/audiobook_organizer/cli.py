@@ -688,14 +688,17 @@ def analyze(
     issues_table.add_column("Category", width=12)
     issues_table.add_column("Message")
     issues_table.add_column("Suggestion", style="dim")
+    issues_table.add_column("Auto-fix", justify="center", width=8)
 
     severity_style = {"error": "red bold", "warning": "yellow", "info": "blue"}
     for issue in report.issues:
+        auto_fix = "[green]✓[/green]" if issue.fix else "[dim]—[/dim]"
         issues_table.add_row(
             f"[{severity_style.get(issue.severity, '')}]{issue.severity}[/]",
             issue.category,
             issue.message,
             issue.suggestion or "",
+            auto_fix,
         )
 
     console.print(issues_table)
