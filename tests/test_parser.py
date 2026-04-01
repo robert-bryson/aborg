@@ -26,6 +26,7 @@ from audiobook_organizer.parser import (
     parse_title_folder,
     path_parent_name,
     strip_author_from_title,
+    strip_narrator_from_author,
 )
 from audiobook_organizer.config import Config
 
@@ -195,6 +196,66 @@ class TestMergeMeta:
         b = AudiobookMeta()
         assert merge_meta(a, b).source_path == p
         assert merge_meta(b, a).source_path == p
+
+    def test_strips_narrator_from_multi_author(self):
+        """When narrator matches second name in 'Author, Narrator' author field."""
+        tag = AudiobookMeta(author="Deepa Bhasthi, Banu Mushtaq", narrator="Banu Mushtaq")
+        name = AudiobookMeta(title="Heart Lamp")
+        merged = merge_meta(tag, name)
+        assert merged.author == "Deepa Bhasthi"
+        assert merged.narrator == "Banu Mushtaq"
+
+    def test_keeps_genuine_coauthors(self):
+        """When narrator is someone else, both authors stay."""
+        tag = AudiobookMeta(author="Bob Woodward, Carl Bernstein", narrator="John Doe")
+        merged = merge_meta(tag)
+        assert merged.author == "Bob Woodward, Carl Bernstein"
+
+    def test_no_narrator_keeps_multi_author(self):
+        """When no narrator info, multi-author stays unchanged."""
+        tag = AudiobookMeta(author="Bob Woodward, Carl Bernstein")
+        merged = merge_meta(tag)
+        assert merged.author == "Bob Woodward, Carl Bernstein"
+
+
+# ── strip_narrator_from_author ───────────────────────────────────────────
+
+
+class TestStripNarratorFromAuthor:
+    def test_narrator_matches_second_author(self):
+        meta = AudiobookMeta(author="Stephen King, Ray Porter", narrator="Ray Porter")
+        strip_narrator_from_author(meta)
+        assert meta.author == "Stephen King"
+
+    def test_narrator_matches_first_author(self):
+        meta = AudiobookMeta(author="Ray Porter, Stephen King", narrator="Ray Porter")
+        strip_narrator_from_author(meta)
+        assert meta.author == "Stephen King"
+
+    def test_no_match_keeps_both(self):
+        meta = AudiobookMeta(author="Bob Woodward, Carl Bernstein", narrator="Someone Else")
+        strip_narrator_from_author(meta)
+        assert meta.author == "Bob Woodward, Carl Bernstein"
+
+    def test_no_narrator_noop(self):
+        meta = AudiobookMeta(author="Bob Woodward, Carl Bernstein")
+        strip_narrator_from_author(meta)
+        assert meta.author == "Bob Woodward, Carl Bernstein"
+
+    def test_single_author_noop(self):
+        meta = AudiobookMeta(author="Stephen King", narrator="Ray Porter")
+        strip_narrator_from_author(meta)
+        assert meta.author == "Stephen King"
+
+    def test_fuzzy_match_strips(self):
+        meta = AudiobookMeta(author="Stephen King, Ray A. Porter", narrator="Ray A Porter")
+        strip_narrator_from_author(meta)
+        assert meta.author == "Stephen King"
+
+    def test_ampersand_separated(self):
+        meta = AudiobookMeta(author="Stephen King & Ray Porter", narrator="Ray Porter")
+        strip_narrator_from_author(meta)
+        assert meta.author == "Stephen King"
 
 
 # ── looks_like_author ────────────────────────────────────────────────────
@@ -1136,6 +1197,13 @@ class TestAuthorFormatHelpers:
         assert is_last_first("Candice Millard") is False
         assert is_last_first("E. B. White") is False
 
+    def test_is_last_first_multi_author(self):
+        # Comma-separated "First Last" names are NOT "Last, First"
+        assert is_last_first("Bob Woodward, Carl Bernstein") is False
+        assert is_last_first("Deepa Bhasthi, Banu Mushtaq") is False
+        # Ampersand-separated also not "Last, First"
+        assert is_last_first("Woodward, Bob & Bernstein, Carl") is False
+
     def test_flip_last_first(self):
         assert flip_author_name("Applebaum, Anne") == "Anne Applebaum"
 
@@ -1160,6 +1228,27 @@ class TestAuthorFormatHelpers:
     def test_normalize_empty(self):
         assert normalize_author_format("", "last_first") == ""
 
+    def test_normalize_multi_author_last_first(self):
+        result = normalize_author_format("Bob Woodward, Carl Bernstein", "last_first")
+        assert result == "Woodward, Bob & Bernstein, Carl"
+
+    def test_normalize_multi_author_first_last(self):
+        # Already in first_last → unchanged (comma-separated)
+        result = normalize_author_format("Bob Woodward, Carl Bernstein", "first_last")
+        assert result == "Bob Woodward, Carl Bernstein"
+
+    def test_normalize_multi_author_ampersand_to_first_last(self):
+        result = normalize_author_format("Woodward, Bob & Bernstein, Carl", "first_last")
+        assert result == "Bob Woodward, Carl Bernstein"
+
+    def test_normalize_multi_author_ampersand_unchanged_last_first(self):
+        result = normalize_author_format("Woodward, Bob & Bernstein, Carl", "last_first")
+        assert result == "Woodward, Bob & Bernstein, Carl"
+
+    def test_normalize_three_authors_last_first(self):
+        result = normalize_author_format("Alice Smith, Bob Jones, Carol White", "last_first")
+        assert result == "Smith, Alice & Jones, Bob & White, Carol"
+
 
 # ── dest_relative with author_format ─────────────────────────────────────
 
@@ -1179,3 +1268,11 @@ class TestDestRelativeAuthorFormat:
         meta = AudiobookMeta(author="Candice Millard", title="River of the Gods")
         result = meta.dest_relative()
         assert result == Path("Candice Millard/River of the Gods")
+
+    def test_multi_author_last_first(self):
+        meta = AudiobookMeta(
+            author="Bob Woodward, Carl Bernstein",
+            title="All the President's Men",
+        )
+        result = meta.dest_relative(author_format="last_first")
+        assert result == Path("Woodward, Bob & Bernstein, Carl/All the President's Men")

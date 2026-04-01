@@ -101,8 +101,32 @@ def _strip_embedded_year(title: str, year: str) -> str:
     return title
 
 
+def _is_multi_author(name: str) -> bool:
+    """Return True if *name* contains multiple authors.
+
+    Distinguishes ``"First Last, First Last"`` (multi-author) from
+    ``"Last, First"`` (single inverted name) by checking whether the
+    segment before the first comma contains a space.
+    """
+    if ' & ' in name:
+        return True
+    if ',' in name:
+        first_part = name.split(',', 1)[0].strip()
+        return ' ' in first_part
+    return False
+
+
+def _split_authors(name: str) -> list[str]:
+    """Split a multi-author string into individual names."""
+    if ' & ' in name:
+        return [a.strip() for a in name.split(' & ')]
+    return [a.strip() for a in name.split(',')]
+
+
 def is_last_first(name: str) -> bool:
-    """Return True if *name* looks like 'Last, First' format."""
+    """Return True if *name* looks like 'Last, First' format (single author)."""
+    if _is_multi_author(name):
+        return False
     return bool(re.match(r'^[^,]+,\s*.+', name))
 
 
@@ -121,6 +145,13 @@ def normalize_author_format(name: str, fmt: str) -> str:
     """Normalize author name to the given format ('last_first' or 'first_last')."""
     if not name or name == "Unknown Author":
         return name
+    if _is_multi_author(name):
+        authors = _split_authors(name)
+        formatted = [normalize_author_format(a, fmt) for a in authors if a]
+        # Use " & " in last_first mode to avoid ambiguity with the comma
+        # already present in each "Last, First" name.
+        sep = " & " if fmt == "last_first" else ", "
+        return sep.join(formatted)
     if fmt == "last_first" and not is_last_first(name):
         return flip_author_name(name)
     if fmt == "first_last" and is_last_first(name):
@@ -489,6 +520,31 @@ def _clean_tag_title(title: str) -> str:
     return cleaned.strip() or title
 
 
+def strip_narrator_from_author(meta: AudiobookMeta) -> AudiobookMeta:
+    """If the narrator appears as one of the names in a multi-author field, strip it.
+
+    Many audiobook files encode ``"Author, Narrator"`` in the artist tag.
+    When we also know the narrator (from the composer tag or folder braces),
+    we can detect and remove it from the author string.
+    """
+    if not meta.narrator or not _is_multi_author(meta.author):
+        return meta
+    narrator_low = meta.narrator.strip().lower()
+    authors = _split_authors(meta.author)
+    kept = []
+    for a in authors:
+        a_low = a.lower()
+        # Check exact match or fuzzy match (handle minor differences)
+        if a_low == narrator_low:
+            continue
+        if SequenceMatcher(None, a_low, narrator_low).ratio() > 0.85:
+            continue
+        kept.append(a)
+    if kept and len(kept) < len(authors):
+        meta.author = ", ".join(kept)
+    return meta
+
+
 def merge_meta(*sources: AudiobookMeta) -> AudiobookMeta:
     """Merge multiple metadata sources, preferring earlier non-default values."""
     result = AudiobookMeta()
@@ -507,6 +563,7 @@ def merge_meta(*sources: AudiobookMeta) -> AudiobookMeta:
             result.narrator = src.narrator
         if result.source_path is None and src.source_path:
             result.source_path = src.source_path
+    strip_narrator_from_author(result)
     return result
 
 
