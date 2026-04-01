@@ -650,8 +650,7 @@ def analyze(
     if cache:
         cache.save()
 
-    console.print()
-    # Summary
+    # Build summary table (printed at the end)
     summary = Table(title="Collection Summary", show_header=False)
     summary.add_column("Metric", style="bold")
     summary.add_column("Value", justify="right")
@@ -660,9 +659,10 @@ def analyze(
     summary.add_row("Authors", str(report.authors))
     summary.add_row("Series", str(report.series))
     summary.add_row("Issues", str(len(report.issues)))
-    console.print(summary)
 
     if not report.issues:
+        console.print()
+        console.print(summary)
         console.print("\n[green]No issues found — collection looks great![/green]")
         return
 
@@ -699,6 +699,8 @@ def analyze(
     if not fixable:
         if fix or dry_run:
             console.print("\n[dim]No automatically fixable issues found.[/dim]")
+        console.print()
+        console.print(summary)
         return
 
     if not fix and not dry_run:
@@ -706,12 +708,16 @@ def analyze(
             f"\n[dim]{len(fixable)} issue(s) can be fixed automatically. "
             f"Re-run with [bold]--fix[/bold] to apply.[/dim]"
         )
+        console.print()
+        console.print(summary)
         return
 
     if fix and not dry_run and not yes:
         console.print()
         if not click.confirm(f"Apply {len(fixable)} automatic fix(es)?"):
             console.print("[yellow]Aborted.[/yellow]")
+            console.print()
+            console.print(summary)
             return
 
     verb = "Would apply" if dry_run else "Applying"
@@ -736,6 +742,9 @@ def analyze(
         console.print(f"\n[dim]{len(applied)} fix(es) would be applied.[/dim]")
     else:
         console.print(f"\n[green]Applied {len(applied)} fix(es).[/green]")
+
+    console.print()
+    console.print(summary)
 
 
 # ── parse (utility) ─────────────────────────────────────────────────────
