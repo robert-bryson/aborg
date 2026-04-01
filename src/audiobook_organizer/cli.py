@@ -416,11 +416,13 @@ def org(
     skipped = 0
     failed = 0
     moved_sources: list[Path] = []
+    exist_sources: list[Path] = []
     with console.status(f"[bold green]{verb}…[/bold green]", spinner="dots") as status:
         for i, item in enumerate(items, 1):
             dest_full = cfg.destination / item.meta.dest_relative(author_format=cfg.author_name_format)
             if dest_full.exists():
                 skipped += 1
+                exist_sources.append(item.path)
                 continue
             status.update(f"[bold green]{verb}:[/bold green] {item.meta.title}")
             result = organize([item], cfg, dry_run=dry_run, copy=copy)
@@ -450,8 +452,8 @@ def org(
         summary.add_row("Missing source dirs", f"[red]{len(missing_dirs)}[/red]")
     console.print(summary)
 
-    if not dry_run and moved_sources:
-        _offer_source_cleanup(moved_sources, cfg, copy=copy)
+    if not dry_run and (moved_sources or exist_sources):
+        _offer_source_cleanup(moved_sources, cfg, copy=copy, exist_sources=exist_sources)
 
 
 def _offer_source_cleanup(
@@ -459,10 +461,16 @@ def _offer_source_cleanup(
     cfg: Config,
     *,
     copy: bool,
+    exist_sources: list[Path] | None = None,
 ) -> None:
     """After organizing, offer to clean up source paths."""
     cleanup_paths: list[Path] = []
     source_dir_resolved = {sd.resolve() for sd in cfg.source_dirs}
+
+    # Sources whose destination already existed — safe to remove
+    for src in (exist_sources or []):
+        if src.exists():
+            cleanup_paths.append(src)
 
     if copy:
         # For copies, offer to delete the originals
@@ -493,7 +501,7 @@ def _offer_source_cleanup(
     # Sort deepest first so nested dirs are removed before parents
     cleanup_paths.sort(key=lambda p: len(p.parts), reverse=True)
 
-    action = "Delete copied originals" if copy else "Remove empty source directories"
+    action = "Delete copied originals" if copy else "Clean up source files"
     console.print(f"\n[bold]{action}[/bold]")
     for p in cleanup_paths:
         console.print(f"  [dim]•[/dim] {p}")

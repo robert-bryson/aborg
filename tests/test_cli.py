@@ -173,3 +173,35 @@ class TestOfferSourceCleanup:
         with patch("audiobook_organizer.cli.click.confirm") as mock_confirm:
             _offer_source_cleanup([], cfg, copy=False)
             mock_confirm.assert_not_called()
+
+    def test_exist_sources_cleaned_up(self, tmp_path):
+        """Source files for books already in collection are offered for cleanup."""
+        source_dir = tmp_path / "downloads"
+        exist_file = self._write(source_dir / "Author - Title" / "book.m4b")
+        exist_dir = exist_file.parent
+
+        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+
+        with patch("audiobook_organizer.cli.click.confirm", return_value=True):
+            _offer_source_cleanup([], cfg, copy=False, exist_sources=[exist_dir])
+
+        assert not exist_dir.exists()
+
+    def test_exist_sources_and_moved_combined(self, tmp_path):
+        """Both exist sources and empty parent dirs from moves are cleaned up."""
+        source_dir = tmp_path / "downloads"
+        # An EXISTS book still in source
+        exist_file = self._write(source_dir / "Old Book" / "book.m4b")
+        exist_dir = exist_file.parent
+        # A moved book left an empty parent
+        empty_parent = source_dir / "batch"
+        empty_parent.mkdir()
+
+        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+        moved = [empty_parent / "New Book"]
+
+        with patch("audiobook_organizer.cli.click.confirm", return_value=True):
+            _offer_source_cleanup(moved, cfg, copy=False, exist_sources=[exist_dir])
+
+        assert not exist_dir.exists()
+        assert not empty_parent.exists()
