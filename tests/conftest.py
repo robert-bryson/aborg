@@ -1,5 +1,7 @@
 """Shared test fixtures."""
 
+import pytest
+
 from audiobook_organizer.config import Config
 
 # Standard extensions used across tests
@@ -22,3 +24,13 @@ def make_cfg(**overrides) -> Config:
     )
     defaults.update(overrides)
     return Config(**defaults)
+
+
+@pytest.fixture()
+def tmp_cfg(tmp_path):
+    """Write a minimal config.yaml and return its path as a string."""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        "source_dirs: []\ndestination: /tmp/aborg-dest\nmove_log: /tmp/aborg-moves.log\n"
+    )
+    return str(cfg_file)

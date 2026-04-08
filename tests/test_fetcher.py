@@ -186,21 +186,21 @@ class TestCLIFetch:
         assert "--latest" in result.output
 
     @patch("audiobook_organizer.cli.check_odmpy", return_value=False)
-    def test_fetch_no_odmpy(self, mock_check):
+    def test_fetch_no_odmpy(self, mock_check, tmp_cfg):
         from click.testing import CliRunner
 
         from audiobook_organizer.cli import cli
 
-        result = CliRunner().invoke(cli, ["fetch", "--list"])
+        result = CliRunner().invoke(cli, ["-c", tmp_cfg, "fetch", "--list"])
         assert "odmpy is not installed" in result.output
 
     @patch("audiobook_organizer.cli.check_odmpy", return_value=True)
-    def test_fetch_no_auth(self, mock_check):
+    def test_fetch_no_auth(self, mock_check, tmp_cfg):
         from click.testing import CliRunner
 
         from audiobook_organizer.cli import cli
 
-        result = CliRunner().invoke(cli, ["fetch", "--list"])
+        result = CliRunner().invoke(cli, ["-c", tmp_cfg, "fetch", "--list"])
         assert "No Libby account linked" in result.output
 
     @patch("audiobook_organizer.cli.check_odmpy", return_value=True)

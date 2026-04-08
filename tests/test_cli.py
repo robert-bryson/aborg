@@ -23,19 +23,24 @@ class TestCLI:
         result = CliRunner().invoke(cli, ["org", "--help"])
         assert result.exit_code == 0
 
-    def test_parse_command(self):
+    def test_parse_command(self, tmp_cfg):
         result = CliRunner().invoke(
-            cli, ["parse", "Brandon Sanderson - Mistborn Book 1 - The Final Empire"]
+            cli, ["-c", tmp_cfg, "parse", "Brandon Sanderson - Mistborn Book 1 - The Final Empire"]
         )
         assert result.exit_code == 0
         assert "Brandon Sanderson" in result.output
         assert "The Final Empire" in result.output
 
-    def test_parse_handles_full_path(self):
+    def test_parse_handles_full_path(self, tmp_cfg):
         """Parse should extract the folder name from a full path."""
         result = CliRunner().invoke(
             cli,
-            ["parse", r"\\nas\drive\media\audiobooks\Asimov, Isaac\I, Robot - Isaac Asimov - 1950"],
+            [
+                "-c",
+                tmp_cfg,
+                "parse",
+                r"\\nas\drive\media\audiobooks\Asimov, Isaac\I, Robot - Isaac Asimov - 1950",
+            ],
         )
         assert result.exit_code == 0
         # Should show the extracted name, not the full path as author
@@ -43,15 +48,15 @@ class TestCLI:
         # Parent folder "Asimov, Isaac" should be shown as a source
         assert "Asimov, Isaac" in result.output
 
-    def test_parse_shows_sources(self):
+    def test_parse_shows_sources(self, tmp_cfg):
         """Parse should display the Sources section."""
-        result = CliRunner().invoke(cli, ["parse", "Author - Title"])
+        result = CliRunner().invoke(cli, ["-c", tmp_cfg, "parse", "Author - Title"])
         assert result.exit_code == 0
         assert "Sources" in result.output
         assert "Merged result" in result.output
 
-    def test_config_show(self):
-        result = CliRunner().invoke(cli, ["config", "--show"])
+    def test_config_show(self, tmp_cfg):
+        result = CliRunner().invoke(cli, ["-c", tmp_cfg, "config", "--show"])
         assert result.exit_code == 0
         assert "Source dirs" in result.output or "Destination" in result.output
 
@@ -62,8 +67,8 @@ class TestCLI:
         # Click rejects nonexistent path with exit code 2
         assert result.exit_code == 2
 
-    def test_undo_empty(self):
-        result = CliRunner().invoke(cli, ["undo"])
+    def test_undo_empty(self, tmp_cfg):
+        result = CliRunner().invoke(cli, ["-c", tmp_cfg, "undo"])
         assert result.exit_code == 0
         assert "Nothing to undo" in result.output
 
