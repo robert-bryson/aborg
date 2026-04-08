@@ -35,15 +35,15 @@ def _odmpy_cmd() -> list[str]:
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "odmpy", "--version"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if proc.returncode == 0:
             return [sys.executable, "-m", "odmpy"]
-    except Exception:
+    except Exception:  # noqa: S110
         pass
-    raise FileNotFoundError(
-        "odmpy is not installed. Install it with:  uv pip install ."
-    )
+    raise FileNotFoundError("odmpy is not installed. Install it with:  uv pip install .")
 
 
 def _settings_dir(libby_settings: Path) -> Path:
@@ -57,7 +57,9 @@ def check_odmpy() -> bool:
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "odmpy", "--version"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return proc.returncode == 0
     except Exception:
@@ -106,8 +108,10 @@ def list_loans(settings_folder: Path) -> list[LibbyLoan]:
     cmd = [
         *odmpy,
         "libby",
-        "--settings", str(settings),
-        "--exportloans", str(loans_file),
+        "--settings",
+        str(settings),
+        "--exportloans",
+        str(loans_file),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if proc.returncode != 0:
@@ -156,13 +160,18 @@ def download_loan(
 
     cmd = [
         *odmpy,
-        "--retry", "3",
+        "--retry",
+        "3",
         "libby",
-        "--settings", str(settings),
+        "--settings",
+        str(settings),
         "--direct",
-        "-d", str(download_dir),
-        "--selectid", loan.id,
-        "--bookfolderformat", book_folder_format,
+        "-d",
+        str(download_dir),
+        "--selectid",
+        loan.id,
+        "--bookfolderformat",
+        book_folder_format,
     ]
 
     if chapters:
@@ -211,13 +220,18 @@ def download_latest(
 
     cmd = [
         *odmpy,
-        "--retry", "3",
+        "--retry",
+        "3",
         "libby",
-        "--settings", str(settings),
+        "--settings",
+        str(settings),
         "--direct",
-        "-d", str(download_dir),
-        "--latest", str(count),
-        "--bookfolderformat", book_folder_format,
+        "-d",
+        str(download_dir),
+        "--latest",
+        str(count),
+        "--bookfolderformat",
+        book_folder_format,
     ]
 
     if chapters:

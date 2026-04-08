@@ -3,14 +3,11 @@
 from pathlib import Path
 
 from audiobook_organizer.analyzer import (
-    FixAction,
     _check_metadata_quality,
     analyze_collection,
     apply_fixes,
 )
-from audiobook_organizer.parser import flip_author_name, is_last_first
-from audiobook_organizer.config import Config
-from audiobook_organizer.parser import AudiobookMeta
+from audiobook_organizer.parser import AudiobookMeta, flip_author_name, is_last_first
 from audiobook_organizer.scanner import ScanResult
 
 from .conftest import make_cfg
@@ -181,10 +178,7 @@ class TestAuthorNameFormat:
 
         cfg = make_cfg(author_name_format="last_first")
         report = analyze_collection(tmp_path, cfg)
-        format_issues = [
-            i for i in report.issues
-            if "preferred format" in i.message
-        ]
+        format_issues = [i for i in report.issues if "preferred format" in i.message]
         assert len(format_issues) == 1
         assert "Candice Millard" in format_issues[0].message
         assert format_issues[0].fix is not None
@@ -197,10 +191,7 @@ class TestAuthorNameFormat:
 
         cfg = make_cfg(author_name_format="first_last")
         report = analyze_collection(tmp_path, cfg)
-        format_issues = [
-            i for i in report.issues
-            if "preferred format" in i.message
-        ]
+        format_issues = [i for i in report.issues if "preferred format" in i.message]
         assert len(format_issues) == 1
         assert "Applebaum, Anne" in format_issues[0].message
         assert format_issues[0].fix.target.name == "Anne Applebaum"
@@ -212,10 +203,7 @@ class TestAuthorNameFormat:
 
         cfg = make_cfg(author_name_format="last_first")
         report = analyze_collection(tmp_path, cfg)
-        format_issues = [
-            i for i in report.issues
-            if "preferred format" in i.message
-        ]
+        format_issues = [i for i in report.issues if "preferred format" in i.message]
         assert len(format_issues) == 0
 
     def test_fix_renames_author_dir(self, tmp_path):
@@ -235,6 +223,7 @@ class TestAuthorNameFormat:
 class TestMetadataQuality:
     def _make_report(self):
         from audiobook_organizer.analyzer import AnalysisReport
+
         return AnalysisReport()
 
     def test_flags_suspicious_artist(self):

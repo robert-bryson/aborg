@@ -35,7 +35,6 @@ from .parser import (
     parse_audio_tags,
     parse_filename,
     parse_title_folder,
-    path_parent_name,
     strip_author_from_title,
 )
 from .scanner import ScanResult, scan_collection, scan_sources
@@ -54,6 +53,7 @@ def _human_size(size: int) -> str:
 @dataclass
 class _ScanCounters:
     """Mutable counters shared between the hit callback and calling code."""
+
     count: int = 0
     new_count: int = 0
     exist_count: int = 0
@@ -61,7 +61,8 @@ class _ScanCounters:
 
 
 def _make_hit_callback(
-    cfg: Config, counters: _ScanCounters,
+    cfg: Config,
+    counters: _ScanCounters,
 ) -> Callable[[ScanResult], None]:
     """Build a scan-hit callback that prints each discovered book."""
     author_fmt = cfg.author_name_format
@@ -149,12 +150,14 @@ def _win_drive_unc(drive_letter: str) -> str | None:
     try:
         out = subprocess.run(
             ["cmd.exe", "/c", f"net use {drive_letter.upper()}:"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         for line in out.stdout.splitlines():
             if line.strip().startswith("Remote name"):
                 return line.split(None, 2)[-1].strip()
-    except Exception:
+    except Exception:  # noqa: S110
         pass
     return None
 
@@ -282,7 +285,9 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, cache: bo
         if not missing_dirs:
             console.print("[yellow]No audiobook files found.[/yellow]")
         else:
-            console.print("[yellow]No audiobook files found (check source directories above).[/yellow]")
+            console.print(
+                "[yellow]No audiobook files found (check source directories above).[/yellow]"
+            )
         return
 
     total_size = sum(i.size for i in items)
@@ -378,7 +383,9 @@ def org(
         if not missing_dirs:
             console.print("[yellow]No audiobook files found.[/yellow]")
         else:
-            console.print("[yellow]No audiobook files found (check source directories above).[/yellow]")
+            console.print(
+                "[yellow]No audiobook files found (check source directories above).[/yellow]"
+            )
         return
 
     total_size = sum(i.size for i in items)
@@ -399,16 +406,18 @@ def org(
             )
             raise SystemExit(1)
         import tempfile
+
         try:
             with tempfile.NamedTemporaryFile(dir=dest):
                 pass
         except OSError:
             console.print(
                 f"[red]Error:[/red] Destination is not writable: [bold]{dest}[/bold]\n"
-                f"  If this is a network mount, check that it is mounted with read-write permissions.\n"
+                "  If this is a network mount, check that it is mounted"
+                " with read-write permissions.\n"
                 f"  Hint: [dim]mount | grep {dest.name}[/dim]"
             )
-            raise SystemExit(1)
+            raise SystemExit(1)  # noqa: B904
 
     console.print()
     verb = "Would move" if dry_run else ("Copying" if copy else "Moving")
@@ -419,7 +428,9 @@ def org(
     exist_sources: list[Path] = []
     with console.status(f"[bold green]{verb}…[/bold green]", spinner="dots") as status:
         for i, item in enumerate(items, 1):
-            dest_full = cfg.destination / item.meta.dest_relative(author_format=cfg.author_name_format)
+            dest_full = cfg.destination / item.meta.dest_relative(
+                author_format=cfg.author_name_format,
+            )
             if dest_full.exists():
                 skipped += 1
                 exist_sources.append(item.path)
@@ -468,7 +479,7 @@ def _offer_source_cleanup(
     source_dir_resolved = {sd.resolve() for sd in cfg.source_dirs}
 
     # Sources whose destination already existed — safe to remove
-    for src in (exist_sources or []):
+    for src in exist_sources or []:
         if src.exists():
             cleanup_paths.append(src)
 
@@ -527,13 +538,24 @@ def _offer_source_cleanup(
 
 
 @cli.command()
-@click.option("--setup", "setup_code", default=None, help="8-digit Libby setup code to link account.")
-@click.option("--list", "list_only", is_flag=True, help="List current audiobook loans and exit.")
-@click.option("--latest", type=int, default=None, help="Download the latest N loans non-interactively.")
+@click.option("--setup", "setup_code", default=None, help="8-digit Libby setup code.")
+@click.option("--list", "list_only", is_flag=True, help="List current audiobook loans.")
+@click.option("--latest", type=int, default=None, help="Download latest N loans.")
 @click.option("--select", "select_ids", multiple=True, help="Download specific loan(s) by ID.")
-@click.option("--all", "fetch_all", is_flag=True, help="Download all current audiobook loans.")
-@click.option("-d", "--download-dir", type=click.Path(), default=None, help="Override download directory (defaults to first source_dir).")
-@click.option("--organize", "auto_organize", is_flag=True, help="Automatically organize after downloading.")
+@click.option("--all", "fetch_all", is_flag=True, help="Download all current loans.")
+@click.option(
+    "-d",
+    "--download-dir",
+    type=click.Path(),
+    default=None,
+    help="Override download directory (defaults to first source_dir).",
+)
+@click.option(
+    "--organize",
+    "auto_organize",
+    is_flag=True,
+    help="Automatically organize after downloading.",
+)
 @click.option("--merge", is_flag=True, default=None, help="Merge MP3 parts into one file.")
 @click.option("--dry-run", is_flag=True, help="Show what would happen without downloading.")
 @click.pass_context
@@ -564,8 +586,7 @@ def fetch(
     # Check odmpy is installed
     if not check_odmpy():
         console.print(
-            "[red]odmpy is not installed.[/red]\n"
-            "Install it with: [bold]uv pip install .[/bold]"
+            "[red]odmpy is not installed.[/red]\nInstall it with: [bold]uv pip install .[/bold]"
         )
         ctx.exit(1)
         return
@@ -613,8 +634,8 @@ def fetch(
 
         console.print(table)
         console.print(
-            f"\n[dim]Use [bold]aborg fetch --select <ID>[/bold] or "
-            f"[bold]aborg fetch --latest N[/bold] to download.[/dim]"
+            "\n[dim]Use [bold]aborg fetch --select <ID>[/bold] or "
+            "[bold]aborg fetch --latest N[/bold] to download.[/dim]"
         )
         return
 
@@ -646,7 +667,7 @@ def fetch(
             )
 
         if ok:
-            console.print(f"[green]Download complete.[/green]")
+            console.print("[green]Download complete.[/green]")
         else:
             console.print(f"[red]Download failed:[/red] {output}")
             ctx.exit(1)
@@ -670,10 +691,12 @@ def fetch(
             to_download = loans
         else:
             id_set = set(select_ids)
-            to_download = [l for l in loans if l.id in id_set]
+            to_download = [ln for ln in loans if ln.id in id_set]
             if not to_download:
                 console.print(f"[red]No loans matched IDs: {', '.join(select_ids)}[/red]")
-                console.print("[dim]Use [bold]aborg fetch --list[/bold] to see available IDs.[/dim]")
+                console.print(
+                    "[dim]Use [bold]aborg fetch --list[/bold] to see available IDs.[/dim]"
+                )
                 ctx.exit(1)
                 return
 
@@ -687,7 +710,10 @@ def fetch(
         results: list[FetchResult] = []
         for loan in to_download:
             console.print(f"  [dim]↓[/dim] {loan.author} — [bold]{loan.title}[/bold]")
-            with console.status(f"[bold green]Downloading:[/bold green] {loan.title}", spinner="dots"):
+            with console.status(
+                f"[bold green]Downloading:[/bold green] {loan.title}",
+                spinner="dots",
+            ):
                 result = download_loan(
                     settings,
                     dl_dir,
@@ -741,7 +767,11 @@ def fetch(
 @click.option("--dry-run", is_flag=True, help="Show what --fix would do without making changes.")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt when using --fix.")
 @click.option("--cache", is_flag=True, help="Use cached results from previous scans.")
-@click.option("--check-tags/--no-check-tags", default=True, help="Read audio tags and check metadata quality (disable with --no-check-tags for speed).")
+@click.option(
+    "--check-tags/--no-check-tags",
+    default=True,
+    help="Read audio tags and check metadata quality (--no-check-tags for speed).",
+)
 @click.pass_context
 def analyze(
     ctx: click.Context,
@@ -770,7 +800,11 @@ def analyze(
             status.update(f"[bold green]Analyzing:[/bold green] {msg}")
 
         report = analyze_collection(
-            root, cfg, on_progress=_on_progress, cache=scan_cache, read_tags=check_tags,
+            root,
+            cfg,
+            on_progress=_on_progress,
+            cache=scan_cache,
+            read_tags=check_tags,
         )
 
     if scan_cache:
@@ -1044,7 +1078,8 @@ def _config_wizard(cfg_path: Path) -> None:
     )
     dirs: list[Path] = []
     while True:
-        prompt = f"  Source dir [{len(dirs) + 1}]" if not dirs else f"  Source dir [{len(dirs) + 1}] (blank to finish)"
+        idx = len(dirs) + 1
+        prompt = f"  Source dir [{idx}]" if not dirs else f"  Source dir [{idx}] (blank to finish)"
         raw = click.prompt(prompt, default="", show_default=False).strip()
         if not raw:
             if not dirs:
@@ -1074,13 +1109,15 @@ def _config_wizard(cfg_path: Path) -> None:
 
     # ── Auto-extract archives ─────────────────────────────────────────
     cfg.auto_extract = click.confirm(
-        "\n  Auto-extract zip/rar/7z archives at destination?", default=cfg.auto_extract,
+        "\n  Auto-extract zip/rar/7z archives at destination?",
+        default=cfg.auto_extract,
     )
 
     # ── Delete after extract ──────────────────────────────────────────
     if cfg.auto_extract:
         cfg.delete_after_extract = click.confirm(
-            "  Delete archive after successful extraction?", default=cfg.delete_after_extract,
+            "  Delete archive after successful extraction?",
+            default=cfg.delete_after_extract,
         )
 
     # ── Review & confirm ──────────────────────────────────────────────

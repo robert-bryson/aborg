@@ -44,7 +44,7 @@ class ScanCache:
         payload = {"version": CACHE_VERSION, "entries": self._entries}
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, separators=(",", ":")))
-        os.replace(tmp, self.path)
+        tmp.replace(self.path)
         self._dirty = False
 
     # ── lookup / store ───────────────────────────────────────────────
@@ -116,10 +116,12 @@ def _fingerprint(path: Path) -> str | None:
     for dirpath, dirnames, filenames in os.walk(path):
         dirnames.sort()
         for fname in sorted(filenames):
-            fpath = os.path.join(dirpath, fname)
+            fpath = Path(dirpath) / fname
             try:
-                fst = os.stat(fpath)
-                h.update(f"{fpath}:{fst.st_mtime_ns}:{fst.st_size}\n".encode("utf-8", "surrogateescape"))
+                fst = fpath.stat()
+                h.update(
+                    f"{fpath}:{fst.st_mtime_ns}:{fst.st_size}\n".encode("utf-8", "surrogateescape")
+                )
             except OSError:
                 pass
     return f"d:{h.hexdigest()}"

@@ -6,25 +6,54 @@ import json
 import re
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path
-
 from difflib import SequenceMatcher
+from pathlib import Path
 
 from mutagen import File as MutagenFile
 from mutagen import MutagenError
 
 # Words that suggest an "artist" tag is a category/genre, not a person.
-_NON_AUTHOR_WORDS = frozenset({
-    "top", "best", "greatest", "100", "sci-fi", "scifi", "fantasy", "fiction",
-    "books", "audiobooks", "collection", "series", "classics", "library",
-    "various", "artists", "unknown", "anthology", "assorted", "compilation",
-    "audio", "unabridged", "abridged",
-})
+_NON_AUTHOR_WORDS = frozenset(
+    {
+        "top",
+        "best",
+        "greatest",
+        "100",
+        "sci-fi",
+        "scifi",
+        "fantasy",
+        "fiction",
+        "books",
+        "audiobooks",
+        "collection",
+        "series",
+        "classics",
+        "library",
+        "various",
+        "artists",
+        "unknown",
+        "anthology",
+        "assorted",
+        "compilation",
+        "audio",
+        "unabridged",
+        "abridged",
+    }
+)
 
 # Audio extensions used for path normalisation.
-_AUDIO_EXTS = frozenset({
-    ".m4b", ".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wma", ".aac",
-})
+_AUDIO_EXTS = frozenset(
+    {
+        ".m4b",
+        ".mp3",
+        ".m4a",
+        ".ogg",
+        ".opus",
+        ".flac",
+        ".wma",
+        ".aac",
+    }
+)
 
 
 @dataclass
@@ -109,32 +138,32 @@ def _is_multi_author(name: str) -> bool:
     ``"Last, First"`` (single inverted name) by checking whether the
     segment before the first comma contains a space.
     """
-    if ' & ' in name:
+    if " & " in name:
         return True
-    if ',' in name:
-        first_part = name.split(',', 1)[0].strip()
-        return ' ' in first_part
+    if "," in name:
+        first_part = name.split(",", 1)[0].strip()
+        return " " in first_part
     return False
 
 
 def _split_authors(name: str) -> list[str]:
     """Split a multi-author string into individual names."""
-    if ' & ' in name:
-        return [a.strip() for a in name.split(' & ')]
-    return [a.strip() for a in name.split(',')]
+    if " & " in name:
+        return [a.strip() for a in name.split(" & ")]
+    return [a.strip() for a in name.split(",")]
 
 
 def is_last_first(name: str) -> bool:
     """Return True if *name* looks like 'Last, First' format (single author)."""
     if _is_multi_author(name):
         return False
-    return bool(re.match(r'^[^,]+,\s*.+', name))
+    return bool(re.match(r"^[^,]+,\s*.+", name))
 
 
 def flip_author_name(name: str) -> str:
     """Convert 'Last, First' to 'First Last' or vice versa."""
     if is_last_first(name):
-        last, first = name.split(',', 1)
+        last, first = name.split(",", 1)
         return f"{first.strip()} {last.strip()}"
     parts = name.rsplit(None, 1)
     if len(parts) == 2:
@@ -173,9 +202,7 @@ def looks_like_author(name: str) -> bool:
     if len(words) <= 3 and bad >= 1:
         return False
     # Leading digit → probably track/disc numbering, not a name
-    if words[0].isdigit():
-        return False
-    return True
+    return not words[0].isdigit()
 
 
 def normalize_path_name(input_str: str) -> str:
@@ -229,7 +256,7 @@ def parse_filename(name: str, patterns: list[str] | None = None) -> AudiobookMet
     return AudiobookMeta(title=title)
 
 
-# Regex matching common separators in folder names: " - ", " – ", " — "
+# Regex matching common separators in folder names: " - ", " \u2013 ", " \u2014 "
 _SEP_RE = re.compile(r"\s+[-\u2013\u2014]\s+")
 
 
@@ -317,9 +344,7 @@ def _parse_title_remainder(text: str) -> AudiobookMeta:
         text = text[m_seq.end() :].strip()
     else:
         # Bare leading number: "1 - …" or "1. …" (but not a 4-digit year)
-        m_bare = re.match(
-            r"^(\d{1,3}(?:\.\d+)?)\s*[-.\u2013\u2014]\s+", text
-        )
+        m_bare = re.match(r"^(\d{1,3}(?:\.\d+)?)\s*[-.\u2013\u2014]\s+", text)
         if m_bare:
             meta.sequence = m_bare.group(1)
             text = text[m_bare.end() :].strip()
@@ -408,7 +433,9 @@ def _strip_by_author(text: str, known_author: str) -> str:
 
 
 def parse_title_folder(
-    name: str, known_author: str, patterns: list[str] | None = None,
+    name: str,
+    known_author: str,
+    patterns: list[str] | None = None,
 ) -> AudiobookMeta:
     """Parse a title folder name when the author is already known.
 
@@ -578,8 +605,7 @@ def strip_narrator_from_author(meta: AudiobookMeta) -> AudiobookMeta:
     for a in authors:
         a_low = a.lower()
         if any(
-            a_low == n or SequenceMatcher(None, a_low, n).ratio() > 0.85
-            for n in names_to_strip
+            a_low == n or SequenceMatcher(None, a_low, n).ratio() > 0.85 for n in names_to_strip
         ):
             continue
         kept.append(a)

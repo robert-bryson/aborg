@@ -165,7 +165,12 @@ class TestScanCache:
             source_path=audio,
         )
         result = ScanResult(
-            path=audio, kind="audio_file", meta=meta, size=100, has_cover=True, file_count=0,
+            path=audio,
+            kind="audio_file",
+            meta=meta,
+            size=100,
+            has_cover=True,
+            file_count=0,
         )
 
         cache = ScanCache(cache_file)

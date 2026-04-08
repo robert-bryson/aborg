@@ -5,7 +5,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from audiobook_organizer.config import Config
-from audiobook_organizer.parser import AudiobookMeta
 from audiobook_organizer.scanner import scan_collection, scan_sources
 
 from .conftest import make_cfg
@@ -247,10 +246,7 @@ class TestMessyAsimovCollection:
         cfg = make_cfg()
         collection = scan_collection(tmp_path, cfg, read_tags=False)
 
-        robot = next(
-            r for r in collection.items
-            if "Robot" in r.path.name
-        )
+        robot = next(r for r in collection.items if "Robot" in r.path.name)
         assert robot.meta.author == "Asimov, Issac"
         assert robot.meta.title == "I, Robot"
         assert robot.meta.year == "1950"

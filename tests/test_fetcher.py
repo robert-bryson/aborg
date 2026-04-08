@@ -4,10 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from audiobook_organizer.fetcher import (
-    FetchResult,
     LibbyLoan,
     check_odmpy,
     download_latest,
@@ -55,7 +52,13 @@ class TestLibbySetup:
         mock_client.get_chip.return_value = {}
         mock_client.clone_by_code.return_value = {}
 
-        with patch.dict("sys.modules", {"odmpy": MagicMock(), "odmpy.libby": MagicMock(LibbyClient=MagicMock(return_value=mock_client))}):
+        with patch.dict(
+            "sys.modules",
+            {
+                "odmpy": MagicMock(),
+                "odmpy.libby": MagicMock(LibbyClient=MagicMock(return_value=mock_client)),
+            },
+        ):
             ok, msg = libby_setup(tmp_path, "12345678")
             assert ok is True
             assert "successfully" in msg.lower()
@@ -149,7 +152,7 @@ class TestDownloadLatest:
     def test_latest_success(self, mock_run, mock_cmd, tmp_path):
         mock_run.return_value = MagicMock(returncode=0, stdout="done", stderr="")
 
-        ok, output = download_latest(tmp_path / "settings", tmp_path / "dl", count=2)
+        ok, _output = download_latest(tmp_path / "settings", tmp_path / "dl", count=2)
 
         assert ok is True
         cmd = mock_run.call_args[0][0]
@@ -211,8 +214,10 @@ class TestCLIFetch:
         settings.mkdir(parents=True)
         (settings / "libby.json").write_text("{}")
 
-        result = CliRunner().invoke(
-            cli, ["-c", str(tmp_path / "nonexistent.yaml"), "fetch"]
-        )
+        result = CliRunner().invoke(cli, ["-c", str(tmp_path / "nonexistent.yaml"), "fetch"])
         # Without auth it shows the no-account message (since config defaults to ~/.aborg/libby)
-        assert result.exit_code != 0 or "No action specified" in result.output or "No Libby" in result.output
+        assert (
+            result.exit_code != 0
+            or "No action specified" in result.output
+            or "No Libby" in result.output
+        )

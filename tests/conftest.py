@@ -5,7 +5,9 @@ from audiobook_organizer.config import Config
 # Standard extensions used across tests
 AUDIO_EXTS = frozenset({".m4b", ".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wma", ".aac"})
 ARCHIVE_EXTS = frozenset({".zip", ".rar", ".7z"})
-COMPANION_EXTS = frozenset({".jpg", ".jpeg", ".png", ".pdf", ".epub", ".nfo", ".cue", ".txt", ".opf"})
+COMPANION_EXTS = frozenset(
+    {".jpg", ".jpeg", ".png", ".pdf", ".epub", ".nfo", ".cue", ".txt", ".opf"}
+)
 PATTERNS = list(Config.DEFAULT_PATTERNS)
 
 

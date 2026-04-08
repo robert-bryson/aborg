@@ -1,10 +1,11 @@
 """Tests for audiobook_organizer.parser — filename parsing and metadata."""
 
+import json
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
+from audiobook_organizer.config import Config
 from audiobook_organizer.parser import (
     AudiobookMeta,
     _clean_tag_title,
@@ -28,7 +29,6 @@ from audiobook_organizer.parser import (
     strip_author_from_title,
     strip_narrator_from_author,
 )
-from audiobook_organizer.config import Config
 
 # Patterns used in tests (same as the defaults shipped in config.yaml)
 PATTERNS = list(Config.DEFAULT_PATTERNS)
@@ -219,9 +219,7 @@ class TestMergeMeta:
 
     def test_strips_translator_from_multi_author(self):
         """When translator matches one name in multi-author field."""
-        tag = AudiobookMeta(
-            author="Deepa Bhasthi, Banu Mushtaq", translator="Deepa Bhasthi"
-        )
+        tag = AudiobookMeta(author="Deepa Bhasthi, Banu Mushtaq", translator="Deepa Bhasthi")
         merged = merge_meta(tag)
         assert merged.author == "Banu Mushtaq"
         assert merged.translator == "Deepa Bhasthi"
@@ -273,9 +271,7 @@ class TestStripNarratorFromAuthor:
         assert meta.author == "Stephen King"
 
     def test_translator_stripped(self):
-        meta = AudiobookMeta(
-            author="Deepa Bhasthi, Banu Mushtaq", translator="Deepa Bhasthi"
-        )
+        meta = AudiobookMeta(author="Deepa Bhasthi, Banu Mushtaq", translator="Deepa Bhasthi")
         strip_narrator_from_author(meta)
         assert meta.author == "Banu Mushtaq"
 
@@ -338,9 +334,7 @@ class TestNormalizePathName:
         assert name == "I, Robot - Isaac Asimov - 1950"
 
     def test_windows_path_with_audio_extension(self):
-        name = normalize_path_name(
-            r"\\nas\drive\media\audiobooks-test\Folder\02 02 - I, Robot.mp3"
-        )
+        name = normalize_path_name(r"\\nas\drive\media\audiobooks-test\Folder\02 02 - I, Robot.mp3")
         assert name == "02 02 - I, Robot"
 
     def test_unix_path(self):
@@ -430,12 +424,14 @@ class TestParseAudioTags:
 
     @patch("audiobook_organizer.parser.MutagenFile")
     def test_good_metadata(self, mock_mutagen):
-        mock_mutagen.return_value = self._mock_tags({
-            "artist": "Isaac Asimov",
-            "album": "Foundation",
-            "date": "1951",
-            "composer": "Scott Brick",
-        })
+        mock_mutagen.return_value = self._mock_tags(
+            {
+                "artist": "Isaac Asimov",
+                "album": "Foundation",
+                "date": "1951",
+                "composer": "Scott Brick",
+            }
+        )
         meta = parse_audio_tags(Path("/fake/audio.mp3"))
         assert meta.author == "Isaac Asimov"
         assert meta.title == "Foundation"
@@ -444,10 +440,12 @@ class TestParseAudioTags:
 
     @patch("audiobook_organizer.parser.MutagenFile")
     def test_rejects_category_artist(self, mock_mutagen):
-        mock_mutagen.return_value = self._mock_tags({
-            "artist": "Top 100 Sci-Fi Books",
-            "album": "03 - Book 1 - Foundation - Isaac Asimov",
-        })
+        mock_mutagen.return_value = self._mock_tags(
+            {
+                "artist": "Top 100 Sci-Fi Books",
+                "album": "03 - Book 1 - Foundation - Isaac Asimov",
+            }
+        )
         meta = parse_audio_tags(Path("/fake/audio.mp3"))
         # Should NOT use the garbage artist
         assert meta.author == "Unknown Author"
@@ -456,11 +454,13 @@ class TestParseAudioTags:
 
     @patch("audiobook_organizer.parser.MutagenFile")
     def test_prefers_albumartist_over_bad_artist(self, mock_mutagen):
-        mock_mutagen.return_value = self._mock_tags({
-            "artist": "Various Artists",
-            "albumartist": "Isaac Asimov",
-            "album": "Foundation",
-        })
+        mock_mutagen.return_value = self._mock_tags(
+            {
+                "artist": "Various Artists",
+                "albumartist": "Isaac Asimov",
+                "album": "Foundation",
+            }
+        )
         meta = parse_audio_tags(Path("/fake/audio.mp3"))
         assert meta.author == "Isaac Asimov"
 
@@ -477,34 +477,30 @@ class TestParseAudioTags:
 
 class TestStripAuthorFromName:
     def test_strips_exact_match(self):
-        assert _strip_author_from_name(
-            "I, Robot - Isaac Asimov - 1950", "Isaac Asimov"
-        ) == "I, Robot - 1950"
+        assert (
+            _strip_author_from_name("I, Robot - Isaac Asimov - 1950", "Isaac Asimov")
+            == "I, Robot - 1950"
+        )
 
     def test_strips_flipped_name(self):
         # Known author is "Last, First" but folder has "First Last"
-        assert _strip_author_from_name(
-            "I, Robot - Isaac Asimov - 1950", "Asimov, Isaac"
-        ) == "I, Robot - 1950"
+        assert (
+            _strip_author_from_name("I, Robot - Isaac Asimov - 1950", "Asimov, Isaac")
+            == "I, Robot - 1950"
+        )
 
     def test_strips_with_typo(self):
         # "Issac" vs "Isaac" — fuzzy match should handle it
-        assert _strip_author_from_name(
-            "Isaac Asimov - 1951", "Asimov, Issac"
-        ) == "1951"
+        assert _strip_author_from_name("Isaac Asimov - 1951", "Asimov, Issac") == "1951"
 
     def test_returns_none_for_no_match(self):
-        assert _strip_author_from_name(
-            "Foundation - 1951", "Brandon Sanderson"
-        ) is None
+        assert _strip_author_from_name("Foundation - 1951", "Brandon Sanderson") is None
 
     def test_returns_none_for_single_segment(self):
         assert _strip_author_from_name("Foundation", "Isaac Asimov") is None
 
     def test_strips_from_three_segments(self):
-        result = _strip_author_from_name(
-            "Book 1 - Foundation - Isaac Asimov", "Asimov, Issac"
-        )
+        result = _strip_author_from_name("Book 1 - Foundation - Isaac Asimov", "Asimov, Issac")
         assert result == "Book 1 - Foundation"
 
 
@@ -643,9 +639,7 @@ class TestParseTitleRemainder:
 
     def test_abs_vol_year_title_narrator(self):
         """ABS: Vol. 1 - 1994 - Wizards First Rule {Sam Tsoutsouvas}"""
-        meta = _parse_title_remainder(
-            "Vol. 1 - 1994 - Wizards First Rule {Sam Tsoutsouvas}"
-        )
+        meta = _parse_title_remainder("Vol. 1 - 1994 - Wizards First Rule {Sam Tsoutsouvas}")
         assert meta.title == "Wizards First Rule"
         assert meta.year == "1994"
         assert meta.sequence == "1"
@@ -667,9 +661,7 @@ class TestParseTitleRemainder:
 
     def test_abs_paren_year_title_subtitle(self):
         """ABS: (1994) - Wizards First Rule - A Really Good Subtitle"""
-        meta = _parse_title_remainder(
-            "(1994) - Wizards First Rule - A Really Good Subtitle"
-        )
+        meta = _parse_title_remainder("(1994) - Wizards First Rule - A Really Good Subtitle")
         assert meta.title == "Wizards First Rule - A Really Good Subtitle"
         assert meta.year == "1994"
 
@@ -757,7 +749,9 @@ class TestParseTitleFolder:
 
     def test_strips_author_extracts_title_and_year(self):
         meta = parse_title_folder(
-            "I, Robot - Isaac Asimov - 1950", "Asimov, Issac", PATTERNS,
+            "I, Robot - Isaac Asimov - 1950",
+            "Asimov, Issac",
+            PATTERNS,
         )
         assert meta.author == "Asimov, Issac"
         assert meta.title == "I, Robot"
@@ -792,7 +786,9 @@ class TestParseTitleFolder:
 
     def test_dest_folder_name_after_fix(self):
         meta = parse_title_folder(
-            "I, Robot - Isaac Asimov - 1950", "Asimov, Issac", PATTERNS,
+            "I, Robot - Isaac Asimov - 1950",
+            "Asimov, Issac",
+            PATTERNS,
         )
         assert meta.dest_folder_name() == "1950 - I, Robot"
 
@@ -800,7 +796,9 @@ class TestParseTitleFolder:
 
     def test_abs_narrator_curly_braces(self):
         meta = parse_title_folder(
-            "Foundation {Scott Brick}", "Isaac Asimov", PATTERNS,
+            "Foundation {Scott Brick}",
+            "Isaac Asimov",
+            PATTERNS,
         )
         assert meta.title == "Foundation"
         assert meta.narrator == "Scott Brick"
@@ -808,14 +806,18 @@ class TestParseTitleFolder:
 
     def test_abs_narrator_square_brackets(self):
         meta = parse_title_folder(
-            "Foundation [Scott Brick]", "Isaac Asimov", PATTERNS,
+            "Foundation [Scott Brick]",
+            "Isaac Asimov",
+            PATTERNS,
         )
         assert meta.title == "Foundation"
         assert meta.narrator == "Scott Brick"
 
     def test_abs_vol_year_title(self):
         meta = parse_title_folder(
-            "Vol 1 - 1994 - Wizards First Rule", "Terry Goodkind", PATTERNS,
+            "Vol 1 - 1994 - Wizards First Rule",
+            "Terry Goodkind",
+            PATTERNS,
         )
         assert meta.title == "Wizards First Rule"
         assert meta.year == "1994"
@@ -835,7 +837,9 @@ class TestParseTitleFolder:
 
     def test_abs_year_book_title(self):
         meta = parse_title_folder(
-            "1994 - Book 1 - Wizards First Rule", "Terry Goodkind", PATTERNS,
+            "1994 - Book 1 - Wizards First Rule",
+            "Terry Goodkind",
+            PATTERNS,
         )
         assert meta.title == "Wizards First Rule"
         assert meta.year == "1994"
@@ -843,21 +847,27 @@ class TestParseTitleFolder:
 
     def test_abs_paren_year(self):
         meta = parse_title_folder(
-            "(2006) - The Final Empire", "Brandon Sanderson", PATTERNS,
+            "(2006) - The Final Empire",
+            "Brandon Sanderson",
+            PATTERNS,
         )
         assert meta.title == "The Final Empire"
         assert meta.year == "2006"
 
     def test_abs_bare_sequence(self):
         meta = parse_title_folder(
-            "1 - Wizards First Rule", "Terry Goodkind", PATTERNS,
+            "1 - Wizards First Rule",
+            "Terry Goodkind",
+            PATTERNS,
         )
         assert meta.title == "Wizards First Rule"
         assert meta.sequence == "1"
 
     def test_abs_trailing_volume(self):
         meta = parse_title_folder(
-            "1994 - Wizards First Rule - Volume 1", "Terry Goodkind", PATTERNS,
+            "1994 - Wizards First Rule - Volume 1",
+            "Terry Goodkind",
+            PATTERNS,
         )
         assert meta.title == "Wizards First Rule"
         assert meta.year == "1994"
@@ -868,7 +878,9 @@ class TestParseTitleFolder:
     def test_author_with_typo_stripped(self):
         """Fuzzy matching handles 'Issac' vs 'Isaac' in folder name."""
         meta = parse_title_folder(
-            "Issac Asimov - Foundation - 1951", "Asimov, Isaac", PATTERNS,
+            "Issac Asimov - Foundation - 1951",
+            "Asimov, Isaac",
+            PATTERNS,
         )
         assert meta.author == "Asimov, Isaac"
         assert meta.title == "Foundation"
@@ -888,7 +900,9 @@ class TestParseTitleFolder:
     def test_messy_title_only_year_and_author(self):
         """Folder has only author + year — title should be Unknown."""
         meta = parse_title_folder(
-            "Isaac Asimov - 1951", "Asimov, Issac", PATTERNS,
+            "Isaac Asimov - 1951",
+            "Asimov, Issac",
+            PATTERNS,
         )
         assert meta.year == "1951"
         assert meta.title == "Unknown Title"
@@ -898,7 +912,9 @@ class TestParseTitleFolder:
     def test_title_with_comma_not_confused_with_author(self):
         """Titles containing commas shouldn't trip up parsing."""
         meta = parse_title_folder(
-            "Caves of Steel, The", "Isaac Asimov", PATTERNS,
+            "Caves of Steel, The",
+            "Isaac Asimov",
+            PATTERNS,
         )
         assert meta.title == "Caves of Steel, The"
         assert meta.author == "Isaac Asimov"
@@ -915,7 +931,9 @@ class TestParseTitleFolder:
     def test_dest_relative_with_series(self):
         """dest_relative includes series folder when series is set."""
         meta = parse_title_folder(
-            "Vol 1 - 1994 - Wizards First Rule", "Terry Goodkind", PATTERNS,
+            "Vol 1 - 1994 - Wizards First Rule",
+            "Terry Goodkind",
+            PATTERNS,
         )
         meta.series = "Sword of Truth"
         expected = "Terry Goodkind/Sword of Truth/Vol 1 - 1994 - Wizards First Rule"
@@ -979,28 +997,30 @@ class TestParseTitleFolder:
 
 class TestStripAuthorFromTitle:
     def test_strips_author_from_tag_title(self):
-        assert strip_author_from_title(
-            "Book 1 - Foundation - Isaac Asimov", "Asimov, Issac"
-        ) == "Book 1 - Foundation"
+        assert (
+            strip_author_from_title("Book 1 - Foundation - Isaac Asimov", "Asimov, Issac")
+            == "Book 1 - Foundation"
+        )
 
     def test_leaves_clean_title(self):
         assert strip_author_from_title("Foundation", "Isaac Asimov") == "Foundation"
 
     def test_leaves_title_without_author(self):
-        assert strip_author_from_title(
-            "The Final Empire", "Brandon Sanderson"
-        ) == "The Final Empire"
+        assert (
+            strip_author_from_title("The Final Empire", "Brandon Sanderson") == "The Final Empire"
+        )
 
     def test_strips_by_author(self):
-        assert strip_author_from_title(
-            "Fear, Trump in the White House by Bob Woodward",
-            "Woodward, Bob",
-        ) == "Fear, Trump in the White House"
+        assert (
+            strip_author_from_title(
+                "Fear, Trump in the White House by Bob Woodward",
+                "Woodward, Bob",
+            )
+            == "Fear, Trump in the White House"
+        )
 
 
 # ── parse_metadata_json ──────────────────────────────────────────────────
-
-import json
 
 
 class TestParseMetadataJson:
@@ -1008,13 +1028,17 @@ class TestParseMetadataJson:
         """Parse a complete metadata.json with author and narrator."""
         meta_dir = tmp_path / "metadata"
         meta_dir.mkdir()
-        (meta_dir / "metadata.json").write_text(json.dumps({
-            "title": "A Tale of Two Cities",
-            "creator": [
-                {"name": "Charles Dickens", "role": "aut"},
-                {"name": "Adam Henderson", "role": "nrt"},
-            ],
-        }))
+        (meta_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "title": "A Tale of Two Cities",
+                    "creator": [
+                        {"name": "Charles Dickens", "role": "aut"},
+                        {"name": "Adam Henderson", "role": "nrt"},
+                    ],
+                }
+            )
+        )
         meta = parse_metadata_json(tmp_path)
         assert meta is not None
         assert meta.author == "Charles Dickens"
@@ -1039,9 +1063,13 @@ class TestParseMetadataJson:
         """Extracts title when no creator entries."""
         meta_dir = tmp_path / "metadata"
         meta_dir.mkdir()
-        (meta_dir / "metadata.json").write_text(json.dumps({
-            "title": "Foundation",
-        }))
+        (meta_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "title": "Foundation",
+                }
+            )
+        )
         meta = parse_metadata_json(tmp_path)
         assert meta is not None
         assert meta.title == "Foundation"
@@ -1051,13 +1079,17 @@ class TestParseMetadataJson:
         """Uses the first author when multiple are listed."""
         meta_dir = tmp_path / "metadata"
         meta_dir.mkdir()
-        (meta_dir / "metadata.json").write_text(json.dumps({
-            "title": "Collab Book",
-            "creator": [
-                {"name": "Author One", "role": "aut"},
-                {"name": "Author Two", "role": "aut"},
-            ],
-        }))
+        (meta_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "title": "Collab Book",
+                    "creator": [
+                        {"name": "Author One", "role": "aut"},
+                        {"name": "Author Two", "role": "aut"},
+                    ],
+                }
+            )
+        )
         meta = parse_metadata_json(tmp_path)
         assert meta is not None
         assert meta.author == "Author One"
@@ -1073,13 +1105,17 @@ class TestParseMetadataJson:
         """Only aut, nrt, and trl roles are used."""
         meta_dir = tmp_path / "metadata"
         meta_dir.mkdir()
-        (meta_dir / "metadata.json").write_text(json.dumps({
-            "title": "Illustrated Book",
-            "creator": [
-                {"name": "Some Illustrator", "role": "ill"},
-                {"name": "Real Author", "role": "aut"},
-            ],
-        }))
+        (meta_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "title": "Illustrated Book",
+                    "creator": [
+                        {"name": "Some Illustrator", "role": "ill"},
+                        {"name": "Real Author", "role": "aut"},
+                    ],
+                }
+            )
+        )
         meta = parse_metadata_json(tmp_path)
         assert meta is not None
         assert meta.author == "Real Author"
@@ -1089,13 +1125,17 @@ class TestParseMetadataJson:
         """Extracts translator from 'trl' role."""
         meta_dir = tmp_path / "metadata"
         meta_dir.mkdir()
-        (meta_dir / "metadata.json").write_text(json.dumps({
-            "title": "Heart Lamp",
-            "creator": [
-                {"name": "Banu Mushtaq", "role": "aut"},
-                {"name": "Deepa Bhasthi", "role": "trl"},
-            ],
-        }))
+        (meta_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "title": "Heart Lamp",
+                    "creator": [
+                        {"name": "Banu Mushtaq", "role": "aut"},
+                        {"name": "Deepa Bhasthi", "role": "trl"},
+                    ],
+                }
+            )
+        )
         meta = parse_metadata_json(tmp_path)
         assert meta is not None
         assert meta.author == "Banu Mushtaq"
@@ -1103,8 +1143,6 @@ class TestParseMetadataJson:
 
 
 # ── parse_metadata_json_from_zip ─────────────────────────────────────────
-
-import zipfile
 
 
 def _make_metadata_zip(tmp_path, metadata_dict, *, prefix=""):
@@ -1120,13 +1158,16 @@ def _make_metadata_zip(tmp_path, metadata_dict, *, prefix=""):
 class TestParseMetadataJsonFromZip:
     def test_full_metadata(self, tmp_path):
         """Read author, title, narrator from zip."""
-        zp = _make_metadata_zip(tmp_path, {
-            "title": "A Tale of Two Cities",
-            "creator": [
-                {"name": "Charles Dickens", "role": "aut"},
-                {"name": "Adam Henderson", "role": "nrt"},
-            ],
-        })
+        zp = _make_metadata_zip(
+            tmp_path,
+            {
+                "title": "A Tale of Two Cities",
+                "creator": [
+                    {"name": "Charles Dickens", "role": "aut"},
+                    {"name": "Adam Henderson", "role": "nrt"},
+                ],
+            },
+        )
         meta = parse_metadata_json_from_zip(zp)
         assert meta is not None
         assert meta.author == "Charles Dickens"
@@ -1135,10 +1176,14 @@ class TestParseMetadataJsonFromZip:
 
     def test_nested_in_subdirectory(self, tmp_path):
         """metadata.json wrapped in a top-level folder inside the zip."""
-        zp = _make_metadata_zip(tmp_path, {
-            "title": "Foundation",
-            "creator": [{"name": "Isaac Asimov", "role": "aut"}],
-        }, prefix="- Foundation/")
+        zp = _make_metadata_zip(
+            tmp_path,
+            {
+                "title": "Foundation",
+                "creator": [{"name": "Isaac Asimov", "role": "aut"}],
+            },
+            prefix="- Foundation/",
+        )
         meta = parse_metadata_json_from_zip(zp)
         assert meta is not None
         assert meta.author == "Isaac Asimov"

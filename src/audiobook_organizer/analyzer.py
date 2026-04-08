@@ -97,7 +97,13 @@ def analyze_collection(
     _log = on_progress or (lambda _msg: None)
 
     _log("Scanning collection…")
-    collection = scan_collection(root, cfg, on_progress=on_progress, read_tags=read_tags, cache=cache)
+    collection = scan_collection(
+        root,
+        cfg,
+        on_progress=on_progress,
+        read_tags=read_tags,
+        cache=cache,
+    )
     items = collection.items
     report = AnalysisReport()
     report.total_books = len(items)
@@ -257,7 +263,10 @@ def _check_missing_covers(items: list[ScanResult], report: AnalysisReport) -> No
 
 
 def _check_author_name_format(
-    items: list[ScanResult], root: Path, cfg: Config, report: AnalysisReport,
+    items: list[ScanResult],
+    root: Path,
+    cfg: Config,
+    report: AnalysisReport,
 ) -> None:
     """Flag author folders that don't match the configured name format."""
     prefer_last_first = cfg.author_name_format == "last_first"
@@ -285,10 +294,7 @@ def _check_author_name_format(
             Issue(
                 severity="warning",
                 category="naming",
-                message=(
-                    f"Author '{author}' doesn't match preferred format "
-                    f"({preferred_label})"
-                ),
+                message=(f"Author '{author}' doesn't match preferred format ({preferred_label})"),
                 path=author_dir,
                 suggestion=f"Rename to '{suggested}'",
                 fix=FixAction(kind="rename", source=author_dir, target=target_dir),
@@ -330,10 +336,7 @@ def _check_metadata_quality(items: list[ScanResult], report: AnalysisReport) -> 
                 Issue(
                     severity="warning",
                     category="metadata",
-                    message=(
-                        f"Suspicious artist tag '{tag.author}' for "
-                        f"'{item.meta.title}'"
-                    ),
+                    message=(f"Suspicious artist tag '{tag.author}' for '{item.meta.title}'"),
                     path=item.path,
                     suggestion=(
                         "The artist tag doesn't look like an author name. "
@@ -354,8 +357,7 @@ def _check_metadata_quality(items: list[ScanResult], report: AnalysisReport) -> 
                     severity="info",
                     category="metadata",
                     message=(
-                        f"Tag author '{tag.author}' differs from folder "
-                        f"author '{item.meta.author}'"
+                        f"Tag author '{tag.author}' differs from folder author '{item.meta.author}'"
                     ),
                     path=item.path,
                     suggestion="Verify which author name is correct",
@@ -369,8 +371,7 @@ def _check_metadata_quality(items: list[ScanResult], report: AnalysisReport) -> 
                     severity="info",
                     category="metadata",
                     message=(
-                        f"Title tag '{tag.title}' starts with numbering "
-                        f"for '{item.meta.title}'"
+                        f"Title tag '{tag.title}' starts with numbering for '{item.meta.title}'"
                     ),
                     path=item.path,
                     suggestion="The title tag may contain track/disc numbering",

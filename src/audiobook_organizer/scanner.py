@@ -172,10 +172,7 @@ def _check_file(path: Path, cfg: Config) -> ScanResult | None:
         file_meta = parse_filename(clean_stem, cfg.filename_patterns)
         # For zips, try metadata.json inside the archive as a fallback.
         zip_meta = parse_metadata_json_from_zip(path) if ext == ".zip" else None
-        if zip_meta:
-            meta = merge_meta(zip_meta, file_meta)
-        else:
-            meta = file_meta
+        meta = merge_meta(zip_meta, file_meta) if zip_meta else file_meta
         if meta.author == "Unknown Author":
             return None
         meta.source_path = path
@@ -225,7 +222,10 @@ def _check_dir(path: Path, cfg: Config) -> ScanResult | None:
     meta.source_path = path
 
     return ScanResult(
-        path=path, kind="audio_dir", meta=meta, size=total_size,
+        path=path,
+        kind="audio_dir",
+        meta=meta,
+        size=total_size,
         tag_meta=first_audio_meta if audio_files else None,
     )
 
@@ -275,10 +275,10 @@ def scan_collection(
     for root_entry in root_entries:
         if not root_entry.is_dir(follow_symlinks=False):
             # Flat file in root
-            if root_entry.is_file(follow_symlinks=False):
-                ext = os.path.splitext(root_entry.name)[1].lower()
-                if ext in audio_exts:
-                    result.flat_audio_files.append(Path(root_entry.path))
+            if root_entry.is_file(follow_symlinks=False) and (
+                Path(root_entry.name).suffix.lower() in audio_exts
+            ):
+                result.flat_audio_files.append(Path(root_entry.path))
             continue
 
         if root_entry.name.startswith("."):
@@ -328,9 +328,7 @@ def scan_collection(
 
                 series_name = sub_entry.name
                 try:
-                    series_entries = sorted(
-                        os.scandir(sub_entry.path), key=lambda e: e.name
-                    )
+                    series_entries = sorted(os.scandir(sub_entry.path), key=lambda e: e.name)
                 except OSError:
                     continue
 
@@ -393,7 +391,7 @@ def _collect_dir_info(dir_path: str, audio_exts: frozenset[str]) -> _DirInfo:
                 stack.append(entry.path)
             elif entry.is_file(follow_symlinks=False):
                 name_lower = entry.name.lower()
-                ext = os.path.splitext(name_lower)[1]
+                ext = Path(name_lower).suffix
                 if ext in audio_exts:
                     try:
                         size = entry.stat().st_size

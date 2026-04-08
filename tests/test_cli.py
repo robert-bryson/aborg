@@ -45,9 +45,7 @@ class TestCLI:
 
     def test_parse_shows_sources(self):
         """Parse should display the Sources section."""
-        result = CliRunner().invoke(
-            cli, ["parse", "Author - Title"]
-        )
+        result = CliRunner().invoke(cli, ["parse", "Author - Title"])
         assert result.exit_code == 0
         assert "Sources" in result.output
         assert "Merged result" in result.output
@@ -87,7 +85,9 @@ class TestOfferSourceCleanup:
         batch.mkdir()
         # batch is now empty (audiobook was moved out)
 
-        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+        cfg = Config(
+            source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log"
+        )
         moved = [batch / "Author - Title"]  # this path no longer exists
 
         with patch("audiobook_organizer.cli.click.confirm", return_value=True):
@@ -103,7 +103,9 @@ class TestOfferSourceCleanup:
         # Simulate moved item
         moved = [batch / "Author - Title"]
 
-        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+        cfg = Config(
+            source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log"
+        )
 
         with patch("audiobook_organizer.cli.click.confirm", return_value=True):
             _offer_source_cleanup(moved, cfg, copy=False)
@@ -116,7 +118,9 @@ class TestOfferSourceCleanup:
         source_dir = tmp_path / "downloads"
         source_dir.mkdir()
 
-        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+        cfg = Config(
+            source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log"
+        )
         # Item was directly inside source_dir
         moved = [source_dir / "book.m4b"]
 
@@ -130,7 +134,9 @@ class TestOfferSourceCleanup:
         source_dir = tmp_path / "downloads"
         src_file = self._write(source_dir / "book.m4b")
 
-        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+        cfg = Config(
+            source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log"
+        )
 
         with patch("audiobook_organizer.cli.click.confirm", return_value=True):
             _offer_source_cleanup([src_file], cfg, copy=True)
@@ -142,7 +148,9 @@ class TestOfferSourceCleanup:
         source_dir = tmp_path / "downloads"
         src_file = self._write(source_dir / "book.m4b")
 
-        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+        cfg = Config(
+            source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log"
+        )
 
         with patch("audiobook_organizer.cli.click.confirm", return_value=False):
             _offer_source_cleanup([src_file], cfg, copy=True)
@@ -156,7 +164,9 @@ class TestOfferSourceCleanup:
         deep.mkdir(parents=True)
         # a/b/c is empty, a/b is empty, a is empty
 
-        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+        cfg = Config(
+            source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log"
+        )
         moved = [deep / "Some Book"]
 
         with patch("audiobook_organizer.cli.click.confirm", return_value=True):
@@ -168,7 +178,9 @@ class TestOfferSourceCleanup:
         """No prompt when nothing was moved."""
         source_dir = tmp_path / "downloads"
         source_dir.mkdir()
-        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+        cfg = Config(
+            source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log"
+        )
 
         with patch("audiobook_organizer.cli.click.confirm") as mock_confirm:
             _offer_source_cleanup([], cfg, copy=False)
@@ -180,7 +192,9 @@ class TestOfferSourceCleanup:
         exist_file = self._write(source_dir / "Author - Title" / "book.m4b")
         exist_dir = exist_file.parent
 
-        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+        cfg = Config(
+            source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log"
+        )
 
         with patch("audiobook_organizer.cli.click.confirm", return_value=True):
             _offer_source_cleanup([], cfg, copy=False, exist_sources=[exist_dir])
@@ -197,7 +211,9 @@ class TestOfferSourceCleanup:
         empty_parent = source_dir / "batch"
         empty_parent.mkdir()
 
-        cfg = Config(source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log")
+        cfg = Config(
+            source_dirs=[source_dir], destination=tmp_path / "dest", move_log=tmp_path / "log"
+        )
         moved = [empty_parent / "New Book"]
 
         with patch("audiobook_organizer.cli.click.confirm", return_value=True):
