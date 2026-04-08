@@ -1,7 +1,6 @@
 # Directories to scan for new audiobook files
-# (WSL path for C:\Users\rsmbr\Downloads)
 source_dirs:
-  - /mnt/c/Users/rsmbr/Downloads
+  - ~/Downloads
   # - /path/to/other/dir
 
 # Destination root directory (Audiobookshelf-compatible)
