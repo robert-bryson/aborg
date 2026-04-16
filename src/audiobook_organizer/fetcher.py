@@ -41,7 +41,7 @@ def _odmpy_cmd() -> list[str]:
         )
         if proc.returncode == 0:
             return [sys.executable, "-m", "odmpy"]
-    except Exception:  # noqa: S110
+    except (OSError, subprocess.SubprocessError):
         pass
     raise FileNotFoundError("odmpy is not installed. Install it with:  uv pip install .")
 
@@ -53,7 +53,7 @@ def _settings_dir(libby_settings: Path) -> Path:
 
 
 def check_odmpy() -> bool:
-    """Return True if odmpy is importable in the current Python environment."""
+    """Return True if odmpy is available in the current Python environment."""
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "odmpy", "--version"],
@@ -62,7 +62,7 @@ def check_odmpy() -> bool:
             timeout=10,
         )
         return proc.returncode == 0
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return False
 
 

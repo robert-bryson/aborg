@@ -175,3 +175,81 @@ class TestCollisionHandling:
         # Suffix should contain microseconds (20 chars: YYYYMMDDHHMMSS + 6 digits)
         suffix_part = second_dest.stem.split("_")[-1]
         assert len(suffix_part) == 20
+
+
+class TestUndoMalformedLog:
+    def test_undo_skips_malformed_lines(self, tmp_path):
+        """Malformed log lines should be skipped, not crash."""
+        log = tmp_path / "moves.log"
+        # Write a mix of valid and malformed lines
+        log.write_text(
+            "2025-01-01T00:00:00+00:00\t/src/book.mp3\t/dest/book.mp3\n"
+            "malformed line without tabs\n"
+            "2025-01-01T00:00:00+00:00\tonlytwofields\n"
+        )
+        cfg = Config(move_log=log)
+        # Should not raise — malformed lines are silently skipped
+        result = undo_last(cfg, dry_run=True)
+        # Only the valid line forms a batch (all share same timestamp)
+        assert isinstance(result, list)
+
+    def test_undo_handles_empty_lines(self, tmp_path):
+        """Empty log lines should not crash undo."""
+        log = tmp_path / "moves.log"
+        log.write_text("\n\n")
+        cfg = Config(move_log=log)
+        assert undo_last(cfg) == []
+
+
+class TestExtractWithDelete:
+    def test_delete_after_extract_only_when_content_exists(self, tmp_path):
+        """Archive should only be deleted if extraction produced content."""
+        zip_path = tmp_path / "src" / "book.zip"
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("audio.mp3", b"\x00" * 100)
+
+        dest = tmp_path / "dest"
+        cfg = Config(
+            destination=dest,
+            auto_extract=True,
+            delete_after_extract=True,
+            move_log=tmp_path / "log",
+        )
+        item = _scan_result(zip_path, kind="archive")
+
+        actions = organize([item], cfg)
+        assert len(actions) == 1
+        # Archive should be deleted (extraction succeeded)
+        assert not zip_path.exists()
+        # Extracted content should exist
+        assert (actions[0][1] / "audio.mp3").exists()
+
+
+class TestDirectoryMerge:
+    def test_merge_into_existing_dir(self, tmp_path):
+        """Moving a directory into an existing one should merge contents."""
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, move_log=tmp_path / "log")
+
+        # First organize creates the destination dir
+        src1 = tmp_path / "src1" / "Author - Book"
+        _write(src1 / "existing.mp3")
+        item1 = _scan_result(src1, kind="audio_dir")
+        actions1 = organize([item1], cfg)
+        assert len(actions1) == 1
+        dest_dir = actions1[0][1]
+        assert (dest_dir / "existing.mp3").exists()
+
+        # Second organize with same metadata merges into existing
+        src2 = tmp_path / "src2" / "Author - Book"
+        _write(src2 / "new_track.mp3")
+        item2 = _scan_result(src2, kind="audio_dir")
+        actions2 = organize([item2], cfg)
+        assert len(actions2) == 1
+
+        # Both files should exist in the destination
+        assert (dest_dir / "existing.mp3").exists()
+        assert (dest_dir / "new_track.mp3").exists()
+        # Source should be removed
+        assert not src2.exists()

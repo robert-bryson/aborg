@@ -67,7 +67,7 @@ def _handle_archive(item: ScanResult, dest_dir: Path, cfg: Config, *, dry_run: b
         # Fall back to just moving the archive
         return _move_or_copy(item.path, dest_dir / item.path.name, copy=False, dry_run=False)
 
-    if cfg.delete_after_extract:
+    if cfg.delete_after_extract and any(dest_dir.iterdir()):
         item.path.unlink()
 
     return dest_dir
@@ -81,13 +81,12 @@ def _handle_directory(
     dest_dir.parent.mkdir(parents=True, exist_ok=True)
     if copy:
         shutil.copytree(item.path, dest_dir, dirs_exist_ok=True)
+    elif dest_dir.exists():
+        # Merge into existing — copy first, then remove source only on success
+        shutil.copytree(item.path, dest_dir, dirs_exist_ok=True)
+        shutil.rmtree(item.path)
     else:
-        if dest_dir.exists():
-            # Merge into existing
-            shutil.copytree(item.path, dest_dir, dirs_exist_ok=True)
-            shutil.rmtree(item.path)
-        else:
-            shutil.move(str(item.path), str(dest_dir))
+        shutil.move(str(item.path), str(dest_dir))
     return dest_dir
 
 
@@ -142,7 +141,10 @@ def undo_last(cfg: Config, *, dry_run: bool = False) -> list[tuple[Path, Path]]:
 
     undone: list[tuple[Path, Path]] = []
     for line in batch:
-        _, src_str, dest_str = line.split("\t")
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue  # skip malformed log entries
+        _, src_str, dest_str = parts[0], parts[1], parts[2]
         src, dest = Path(src_str), Path(dest_str)
         if not dry_run and dest.exists():
             src.parent.mkdir(parents=True, exist_ok=True)

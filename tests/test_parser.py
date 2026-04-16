@@ -26,6 +26,7 @@ from audiobook_organizer.parser import (
     parse_metadata_json_from_zip,
     parse_title_folder,
     path_parent_name,
+    split_path_parts,
     strip_author_from_title,
     strip_narrator_from_author,
 )
@@ -372,6 +373,30 @@ class TestPathParentName:
 
     def test_two_components(self):
         assert path_parent_name("parent/child") == "parent"
+
+
+# ── split_path_parts ─────────────────────────────────────────────────────
+
+
+class TestSplitPathParts:
+    def test_unix_path(self):
+        assert split_path_parts("/home/user/Author/Title") == ["home", "user", "Author", "Title"]
+
+    def test_windows_path(self):
+        parts = split_path_parts(r"\\nas\share\audiobooks\Author\Title")
+        assert parts == ["nas", "share", "audiobooks", "Author", "Title"]
+
+    def test_single_name(self):
+        assert split_path_parts("JustAName") == ["JustAName"]
+
+    def test_empty_string(self):
+        assert split_path_parts("") == []
+
+    def test_trailing_slashes_stripped(self):
+        assert split_path_parts("/a/b/c/") == ["a", "b", "c"]
+
+    def test_mixed_separators(self):
+        assert split_path_parts(r"a\b/c\d") == ["a", "b", "c", "d"]
 
 
 # ── _clean_tag_title ─────────────────────────────────────────────────────

@@ -223,11 +223,19 @@ def normalize_path_name(input_str: str) -> str:
 
 def path_parent_name(input_str: str) -> str | None:
     """Return the parent directory name from a path, or *None*."""
-    normalized = input_str.replace("\\", "/").rstrip("/")
-    parts = [p for p in normalized.split("/") if p]
+    parts = split_path_parts(input_str)
     if len(parts) >= 2:
         return parts[-2]
     return None
+
+
+def split_path_parts(input_str: str) -> list[str]:
+    """Split a path string into its non-empty components.
+
+    Handles both Windows (backslash / UNC) and Unix paths.
+    """
+    normalized = input_str.replace("\\", "/").rstrip("/")
+    return [p for p in normalized.split("/") if p]
 
 
 def parse_filename(name: str, patterns: list[str] | None = None) -> AudiobookMeta:

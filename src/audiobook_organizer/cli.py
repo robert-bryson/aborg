@@ -37,6 +37,8 @@ from .parser import (
     parse_audio_tags,
     parse_filename,
     parse_title_folder,
+    path_parent_name,
+    split_path_parts,
     strip_author_from_title,
 )
 from .scanner import ScanResult, scan_collection, scan_sources
@@ -934,10 +936,7 @@ def parse(ctx: click.Context, filename: str) -> None:
     console.print(f"[dim]Parsed name:[/dim]  {name}")
 
     # ── Identify the parent folder (potential author) ────────────────
-    normalized = filename.replace("\\", "/").rstrip("/")
-    parts = [p for p in normalized.split("/") if p]
-
-    parent = parts[-2] if len(parts) >= 2 else None
+    parent = path_parent_name(filename)
     known_author: str | None = None
     parent_meta = AudiobookMeta()
     if parent:
@@ -973,7 +972,7 @@ def parse(ctx: click.Context, filename: str) -> None:
     # If merged author is obviously wrong, search path ancestors for a
     # clean author name (skip "Author - Title" style components).
     if not looks_like_author(merged.author) or merged.author == "Unknown Author":
-        for comp in reversed(parts[:-1]):
+        for comp in reversed(split_path_parts(filename)[:-1]):
             if " - " in comp:
                 continue
             if looks_like_author(comp):

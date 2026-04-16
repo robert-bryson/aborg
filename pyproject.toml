@@ -75,8 +75,8 @@ select = [
     "PTH",   # flake8-use-pathlib
 ]
 ignore = [
-    "S603",  # subprocess-without-shell-check (not relevant)
-    "S607",  # start-process-with-partial-path (not relevant)
+    "S603",  # subprocess calls use shell=False (default); all inputs are controlled
+    "S607",  # subprocess calls use sys.executable or known binaries, not user input
 ]
 
 [tool.ruff.lint.per-file-ignores]

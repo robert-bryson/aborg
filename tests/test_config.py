@@ -55,6 +55,12 @@ class TestConfigLoad:
         cfg = Config.load(cfg_file)
         assert cfg.auto_extract is False  # zero-value default
 
+    def test_load_invalid_yaml_raises(self, tmp_path):
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text("invalid: yaml: [[[")
+        with pytest.raises(yaml.YAMLError):
+            Config.load(cfg_file)
+
     def test_partial_override(self, tmp_path):
         cfg_file = tmp_path / "config.yaml"
         cfg_file.write_text(yaml.dump({"auto_extract": False}))
