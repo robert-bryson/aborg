@@ -76,13 +76,18 @@ def _handle_archive(item: ScanResult, dest_dir: Path, cfg: Config, *, dry_run: b
 def _handle_directory(
     item: ScanResult, dest_dir: Path, *, dry_run: bool, copy: bool
 ) -> Path | None:
+    """Move or copy an audiobook directory to *dest_dir*.
+
+    When the destination already exists the contents are merged.  For moves
+    this is implemented as copy-then-delete because there is no atomic
+    "move with merge" operation.
+    """
     if dry_run:
         return dest_dir
     dest_dir.parent.mkdir(parents=True, exist_ok=True)
     if copy:
         shutil.copytree(item.path, dest_dir, dirs_exist_ok=True)
     elif dest_dir.exists():
-        # Merge into existing — copy first, then remove source only on success
         shutil.copytree(item.path, dest_dir, dirs_exist_ok=True)
         shutil.rmtree(item.path)
     else:

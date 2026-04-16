@@ -10,9 +10,11 @@ from audiobook_organizer.parser import (
     AudiobookMeta,
     _clean_tag_title,
     _extract_narrator,
+    _is_copyright_notice,
     _parse_title_remainder,
     _sanitize,
     _strip_author_from_name,
+    _strip_author_noise,
     _strip_embedded_year,
     flip_author_name,
     is_last_first,
@@ -323,6 +325,10 @@ class TestLooksLikeAuthor:
         assert looks_like_author("Audiobooks") is False
         assert looks_like_author("Unknown") is False
 
+    def test_tbd_placeholder(self):
+        assert looks_like_author("TBD") is False
+        assert looks_like_author("tbd") is False
+
 
 # ── normalize_path_name ──────────────────────────────────────────────────
 
@@ -495,6 +501,160 @@ class TestParseAudioTags:
         meta = parse_audio_tags(Path("/fake/audio.mp3"))
         assert meta.author == "Unknown Author"
         assert meta.title == "Unknown Title"
+
+    @patch("audiobook_organizer.parser._read_translator")
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_slash_separated_author_narrator(self, mock_mutagen, mock_translator):
+        """Artist tag with Author/Narrator should split correctly."""
+        mock_translator.return_value = None
+        mock_mutagen.return_value = self._mock_tags(
+            {"artist": "Ron Chernow/Scott Brick", "album": "Alexander Hamilton"}
+        )
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+        assert meta.author == "Ron Chernow"
+        assert meta.narrator == "Scott Brick"
+        assert meta.title == "Alexander Hamilton"
+
+    @patch("audiobook_organizer.parser._read_translator")
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_slash_separated_with_copyright(self, mock_mutagen, mock_translator):
+        """Copyright notice in artist tag should be filtered out."""
+        mock_translator.return_value = None
+        mock_mutagen.return_value = self._mock_tags(
+            {
+                "artist": "George R.R. Martin/John Lee/(c) 2005 by George R.R. Martin",
+                "album": "A Feast for Crows",
+            }
+        )
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+        assert meta.author == "George R.R. Martin"
+        assert meta.narrator == "John Lee"
+
+    @patch("audiobook_organizer.parser._read_translator")
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_slash_separated_html_copyright(self, mock_mutagen, mock_translator):
+        """HTML-encoded copyright entity in artist tag should be filtered."""
+        mock_translator.return_value = None
+        mock_mutagen.return_value = self._mock_tags(
+            {
+                "artist": "John Steinbeck/Gary Sinise/&#169;1937 John Steinbeck",
+                "album": "Of Mice and Men",
+            }
+        )
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+        assert meta.author == "John Steinbeck"
+        assert meta.narrator == "Gary Sinise"
+
+    @patch("audiobook_organizer.parser._read_translator")
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_slash_duplicate_name(self, mock_mutagen, mock_translator):
+        """Same person as author and narrator should not duplicate."""
+        mock_translator.return_value = None
+        mock_mutagen.return_value = self._mock_tags(
+            {"artist": "Donna Tartt/Donna Tartt", "album": "The Goldfinch"}
+        )
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+        assert meta.author == "Donna Tartt"
+        # Duplicate name should NOT be set as narrator
+        assert meta.narrator is None
+
+    @patch("audiobook_organizer.parser._read_translator")
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_composer_overrides_slash_narrator(self, mock_mutagen, mock_translator):
+        """Composer tag should take precedence over /-extracted narrator."""
+        mock_translator.return_value = None
+        mock_mutagen.return_value = self._mock_tags(
+            {
+                "artist": "Ron Chernow/Scott Brick",
+                "album": "Alexander Hamilton",
+                "composer": "A Different Narrator",
+            }
+        )
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+        assert meta.author == "Ron Chernow"
+        assert meta.narrator == "A Different Narrator"
+
+    @patch("audiobook_organizer.parser._read_translator")
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_html_entity_decoded_in_title(self, mock_mutagen, mock_translator):
+        """HTML entities like &#8211; should be decoded in titles."""
+        mock_translator.return_value = None
+        mock_mutagen.return_value = self._mock_tags(
+            {
+                "artist": "David M. Kennedy",
+                "album": "Freedom from Fear &#8211; 1929&#8211;1945",
+            }
+        )
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+        assert "\u2013" in meta.title  # en-dash
+        assert "&#" not in meta.title
+
+    @patch("audiobook_organizer.parser._read_translator")
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_author_audio_qualifier_stripped(self, mock_mutagen, mock_translator):
+        """Parenthetical qualifiers like (audio) should be stripped from author."""
+        mock_translator.return_value = None
+        mock_mutagen.return_value = self._mock_tags(
+            {"artist": "Frank Herbert (audio)", "album": "Dune"}
+        )
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+        assert meta.author == "Frank Herbert"
+
+    @patch("audiobook_organizer.parser._read_translator")
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_tbd_narrator_filtered(self, mock_mutagen, mock_translator):
+        """TBD placeholder should not be used as narrator."""
+        mock_translator.return_value = None
+        mock_mutagen.return_value = self._mock_tags(
+            {"artist": "Ann Patchett/TBD", "album": "Commonwealth"}
+        )
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+        assert meta.author == "Ann Patchett"
+        # "TBD" should not pass looks_like_author, so narrator stays None
+        assert meta.narrator is None
+
+
+# ── _is_copyright_notice ─────────────────────────────────────────────────
+
+
+class TestIsCopyrightNotice:
+    def test_c_paren(self):
+        assert _is_copyright_notice("(c) 2005 by George R.R. Martin") is True
+
+    def test_p_paren(self):
+        assert _is_copyright_notice("(p) 2012 HighBridge Company") is True
+
+    def test_copyright_symbol(self):
+        assert _is_copyright_notice("\u00a91937 John Steinbeck") is True
+
+    def test_html_copyright_entity(self):
+        assert _is_copyright_notice("&#169;1937 John Steinbeck") is True
+
+    def test_copyright_word(self):
+        assert _is_copyright_notice("Copyright renewed John Steinbeck, 1965.") is True
+
+    def test_normal_name(self):
+        assert _is_copyright_notice("George R.R. Martin") is False
+
+    def test_narrator_name(self):
+        assert _is_copyright_notice("Scott Brick") is False
+
+
+# ── _strip_author_noise ──────────────────────────────────────────────────
+
+
+class TestStripAuthorNoise:
+    def test_strips_audio_qualifier(self):
+        assert _strip_author_noise("Frank Herbert (audio)") == "Frank Herbert"
+
+    def test_strips_narrator_qualifier(self):
+        assert _strip_author_noise("Jane Austen (narrator)") == "Jane Austen"
+
+    def test_preserves_normal_name(self):
+        assert _strip_author_noise("George Orwell") == "George Orwell"
+
+    def test_case_insensitive(self):
+        assert _strip_author_noise("Author (AUDIO)") == "Author"
 
 
 # ── _strip_author_from_name ──────────────────────────────────────────────

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import re
 import zipfile
@@ -38,7 +39,42 @@ _NON_AUTHOR_WORDS = frozenset(
         "audio",
         "unabridged",
         "abridged",
+        "tbd",
     }
+)
+
+# Regex matching copyright / production notices that appear in artist tags.
+_COPYRIGHT_RE = re.compile(
+    r"^\s*(?:\(c\)|\(p\)|©|copyright\b)",
+    re.IGNORECASE,
+)
+
+# Parenthetical qualifiers to strip from author names.
+_AUTHOR_NOISE_PAREN_RE = re.compile(
+    r"\s*\((?:audio|narrator|reader|abridged|unabridged)\)\s*",
+    re.IGNORECASE,
+)
+
+
+def _is_copyright_notice(text: str) -> bool:
+    """Return True if *text* looks like a copyright/production notice."""
+    t = html.unescape(text).strip()
+    return bool(_COPYRIGHT_RE.match(t))
+
+
+def _strip_author_noise(name: str) -> str:
+    """Remove parenthetical qualifiers like (audio) from an author name."""
+    cleaned = _AUTHOR_NOISE_PAREN_RE.sub("", name).strip()
+    return cleaned or name
+
+# Trailing parenthetical noise to strip from titles (awards, format labels, etc.).
+_NOISE_PAREN_RE = re.compile(
+    r"\s*\((?:"
+    r"[^)]*(?:prize|award|winner|bestseller|best seller|medal|finalist"
+    r"|nominee|honor|notable)[^)]*"
+    r"|audiobook|unabridged|abridged|audio edition|audio cd"
+    r")\)",
+    re.IGNORECASE,
 )
 
 # Audio extensions used for path normalisation.
@@ -546,13 +582,37 @@ def parse_audio_tags(path: Path) -> AudiobookMeta:
         for k in keys:
             vals = tags.get(k)
             if vals:
-                return str(vals[0]).strip()
+                raw = str(vals[0]).strip()
+                return html.unescape(raw) if raw else None
         return None
 
-    # Author — try each candidate, keep the first that looks like a person.
-    for candidate in (_get("albumartist", "album_artist"), _get("artist")):
-        if candidate and looks_like_author(candidate):
-            meta.author = candidate
+    # Author — handle / separated contributors (Author/Narrator/Copyright).
+    for raw_candidate in (_get("albumartist", "album_artist"), _get("artist")):
+        if not raw_candidate:
+            continue
+        if "/" in raw_candidate:
+            parts = [p.strip() for p in raw_candidate.split("/") if p.strip()]
+            people = [
+                _strip_author_noise(p)
+                for p in parts
+                if not _is_copyright_notice(p)
+            ]
+        else:
+            people = [_strip_author_noise(raw_candidate)]
+        for person in people:
+            if looks_like_author(person):
+                meta.author = person
+                break
+        if meta.author != "Unknown Author":
+            # Use remaining valid people as narrator fallback.
+            if meta.narrator is None and len(people) > 1:
+                for person in people[1:]:
+                    if (
+                        person.lower() != meta.author.lower()
+                        and looks_like_author(person)
+                    ):
+                        meta.narrator = person
+                        break
             break
 
     raw_title = _get("album", "title") or meta.title
@@ -567,17 +627,6 @@ def parse_audio_tags(path: Path) -> AudiobookMeta:
     meta.translator = _read_translator(path) or meta.translator
 
     return meta
-
-
-# Trailing parenthetical noise to strip from titles (awards, format labels, etc.).
-_NOISE_PAREN_RE = re.compile(
-    r"\s*\((?:"
-    r"[^)]*(?:prize|award|winner|bestseller|best seller|medal|finalist"
-    r"|nominee|honor|notable)[^)]*"
-    r"|audiobook|unabridged|abridged|audio edition|audio cd"
-    r")\)",
-    re.IGNORECASE,
-)
 
 
 def _clean_tag_title(title: str) -> str:

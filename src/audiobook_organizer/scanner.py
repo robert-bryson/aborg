@@ -97,8 +97,11 @@ def scan_sources(
     _log = on_progress or (lambda _msg: None)
     _hit = on_hit or (lambda _r: None)
 
+    # Deduplicate source directories (config may list the same path twice).
+    source_dirs = list(dict.fromkeys(cfg.source_dirs))
+
     missing_dirs: list[Path] = []
-    for src_dir in cfg.source_dirs:
+    for src_dir in source_dirs:
         if not src_dir.exists():
             missing_dirs.append(src_dir)
             _log(f"[dim]Skipping missing dir: {src_dir}[/dim]")
@@ -198,9 +201,13 @@ def _check_dir(path: Path, cfg: Config) -> ScanResult | None:
 
     for child in path.rglob("*"):
         if child.is_file() and child.suffix.lower() in all_exts:
+            try:
+                size = child.stat().st_size
+            except OSError:
+                continue
             if child.suffix.lower() in cfg.audio_extensions:
                 audio_files.append(child)
-            total_size += child.stat().st_size
+            total_size += size
 
     if not audio_files:
         return None

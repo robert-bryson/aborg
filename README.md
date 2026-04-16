@@ -145,7 +145,7 @@ The tool tries multiple regex patterns against filenames (configurable). Built-i
 
 Metadata is collected from three sources (highest priority first):
 
-1. **Audio tags** — ID3/Mutagen tags (artist, album, composer, series, narrator, etc.)
+1. **Audio tags** — ID3/Mutagen tags (artist, album, composer, series, narrator, etc.). Slash-separated contributor fields (e.g. `Author/Narrator/(c) Publisher`) are split and cleaned automatically — copyright notices, HTML entities, and noise qualifiers like "(audio)" are stripped.
 2. **Filename** — parsed against the configured regex patterns
 3. **Parent directory** — used as a fallback author name
 

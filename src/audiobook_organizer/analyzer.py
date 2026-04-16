@@ -76,12 +76,12 @@ def _normalize_to_first_last(name: str) -> str:
 def _same_author(tag_author: str, folder_author: str) -> bool:
     """Return True if *tag_author* and *folder_author* refer to the same person.
 
-    Handles 'First Last' vs 'Last, First' format differences and tag authors
-    that contain multiple people separated by '/'.
+    Handles 'First Last' vs 'Last, First' format differences.  The tag author
+    is expected to already be cleaned (slash-separated contributors split in
+    ``parse_audio_tags``), but we still guard against stale cached data that
+    may contain slashes.
     """
-    # The tag may contain multiple people (e.g. "Author/Narrator").
-    # Compare the primary (first) author against the folder author.
-    primary = tag_author.split("/")[0]
+    primary = tag_author.split("/")[0].strip()
     return _normalize_to_first_last(primary) == _normalize_to_first_last(folder_author)
 
 
@@ -421,6 +421,8 @@ def _apply_remove_dir(action: FixAction) -> tuple[bool, str]:
 def _apply_rename(action: FixAction) -> tuple[bool, str]:
     if action.target is None:
         return False, "no target path"
+    if not action.source.exists():
+        return False, "source no longer exists"
     if action.target.exists():
         return False, "target already exists"
     try:

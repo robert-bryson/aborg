@@ -134,6 +134,35 @@ class TestScanSources:
         results, _ = scan_sources(cfg)
         assert len(results) == 0
 
+    def test_deduplicates_source_dirs_at_list_level(self, tmp_path):
+        """Duplicate source_dirs should only be scanned once (not just deduped by entry)."""
+        src = tmp_path / "downloads"
+        _make_audio_file(src / "Author - Title.mp3")
+
+        hit_count = []
+        cfg = make_cfg(source_dirs=[src, src, src])
+        results, _ = scan_sources(cfg, on_hit=lambda r: hit_count.append(1))
+        assert len(results) == 1
+        assert len(hit_count) == 1
+
+    def test_check_dir_survives_deleted_file(self, tmp_path):
+        """_check_dir should handle files vanishing between iteration and stat."""
+        src = tmp_path / "downloads"
+        book_dir = src / "Author - Book"
+        _make_audio_file(book_dir / "track01.mp3")
+        _make_audio_file(book_dir / "track02.mp3")
+        # Create and immediately delete a file to simulate race condition
+        ghost = book_dir / "track03.mp3"
+        ghost.write_bytes(b"\x00" * 2_000_000)
+
+        cfg = make_cfg(source_dirs=[src])
+        # Delete after cfg creation but before scan — the rglob may or may not see it
+        # but the code should not crash either way
+        ghost.unlink()
+        results, _ = scan_sources(cfg)
+        # Should still find the book with remaining files
+        assert len(results) == 1
+
 
 class TestScanCollection:
     def test_scans_author_title_structure(self, tmp_path):

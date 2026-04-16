@@ -3,6 +3,9 @@
 from pathlib import Path
 
 from audiobook_organizer.analyzer import (
+    AnalysisReport,
+    FixAction,
+    _apply_rename,
     _check_metadata_quality,
     analyze_collection,
     apply_fixes,
@@ -345,3 +348,42 @@ class TestMetadataQuality:
         ]
         _check_metadata_quality(items, report)
         assert len(report.issues) == 0
+
+
+class TestApplyRename:
+    def test_rename_missing_source(self, tmp_path):
+        """Rename should fail gracefully when source no longer exists."""
+        action = FixAction(
+            kind="rename",
+            source=tmp_path / "does_not_exist",
+            target=tmp_path / "new_name",
+        )
+        ok, err = _apply_rename(action)
+        assert ok is False
+        assert "source no longer exists" in err
+
+    def test_rename_no_target(self):
+        action = FixAction(kind="rename", source=Path("/tmp/x"), target=None)
+        ok, err = _apply_rename(action)
+        assert ok is False
+        assert "no target" in err
+
+    def test_rename_target_exists(self, tmp_path):
+        src = tmp_path / "old"
+        src.mkdir()
+        tgt = tmp_path / "new"
+        tgt.mkdir()
+        action = FixAction(kind="rename", source=src, target=tgt)
+        ok, err = _apply_rename(action)
+        assert ok is False
+        assert "already exists" in err
+
+    def test_rename_success(self, tmp_path):
+        src = tmp_path / "old"
+        src.mkdir()
+        tgt = tmp_path / "new"
+        action = FixAction(kind="rename", source=src, target=tgt)
+        ok, err = _apply_rename(action)
+        assert ok is True
+        assert tgt.exists()
+        assert not src.exists()

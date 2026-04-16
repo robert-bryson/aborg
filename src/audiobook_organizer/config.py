@@ -36,11 +36,15 @@ class Config:
     libby_book_folder_format: str = ""
 
     DEFAULT_PATTERNS: ClassVar[list[str]] = [
+        # Author - Series Book N - Title (Year) [Narrator]
         r"(?P<author>.+?) - (?P<series>.+?)\s*(?:Book|Vol\.?|Volume)\s*(?P<sequence>\d+)"
         r"\s*-\s*(?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*\[(?P<narrator>.+?)\])?$",
+        # Author - Title (Year) [Narrator]
         r"(?P<author>.+?) - (?P<title>.+?)"
         r"(?:\s*\((?P<year>\d{4})\))?(?:\s*\[(?P<narrator>.+?)\])?$",
+        # Title - Author (Year)
         r"(?P<title>.+?) - (?P<author>.+?)(?:\s*\((?P<year>\d{4})\))?$",
+        # Author_Title
         r"(?P<author>[^_]+)_(?P<title>.+)$",
     ]
 
