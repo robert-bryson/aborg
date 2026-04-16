@@ -85,50 +85,53 @@ class Config:
         with cfg_path.open() as f:
             raw: dict[str, Any] = yaml.safe_load(f) or {}
 
-        kwargs: dict[str, Any] = {}
+        # Start from sensible defaults so a minimal config (just source_dirs
+        # + destination) produces a fully functional Config.
+        cfg = cls.default()
 
         if "source_dirs" in raw:
-            kwargs["source_dirs"] = [Path(d).expanduser() for d in raw["source_dirs"]]
+            dirs = [Path(d).expanduser() for d in raw["source_dirs"]]
+            cfg.source_dirs = list(dict.fromkeys(dirs))
         if "destination" in raw:
-            kwargs["destination"] = Path(raw["destination"]).expanduser()
+            cfg.destination = Path(raw["destination"]).expanduser()
         if "archive_extensions" in raw:
-            kwargs["archive_extensions"] = frozenset(raw["archive_extensions"])
+            cfg.archive_extensions = frozenset(raw["archive_extensions"])
         if "audio_extensions" in raw:
-            kwargs["audio_extensions"] = frozenset(raw["audio_extensions"])
+            cfg.audio_extensions = frozenset(raw["audio_extensions"])
         if "companion_extensions" in raw:
-            kwargs["companion_extensions"] = frozenset(raw["companion_extensions"])
+            cfg.companion_extensions = frozenset(raw["companion_extensions"])
         if "auto_extract" in raw:
-            kwargs["auto_extract"] = bool(raw["auto_extract"])
+            cfg.auto_extract = bool(raw["auto_extract"])
         if "delete_after_extract" in raw:
-            kwargs["delete_after_extract"] = bool(raw["delete_after_extract"])
+            cfg.delete_after_extract = bool(raw["delete_after_extract"])
         if "filename_patterns" in raw:
-            kwargs["filename_patterns"] = raw["filename_patterns"]
+            cfg.filename_patterns = raw["filename_patterns"]
         if "min_file_size" in raw:
-            kwargs["min_file_size"] = int(raw["min_file_size"])
+            cfg.min_file_size = int(raw["min_file_size"])
         if "move_log" in raw:
-            kwargs["move_log"] = Path(raw["move_log"]).expanduser()
+            cfg.move_log = Path(raw["move_log"]).expanduser()
         if "author_name_format" in raw:
             fmt = str(raw["author_name_format"]).strip().lower()
             if fmt in ("last_first", "first_last"):
-                kwargs["author_name_format"] = fmt
+                cfg.author_name_format = fmt
 
         # Libby settings
         libby = raw.get("libby", {})
         if isinstance(libby, dict):
             if "settings_folder" in libby:
-                kwargs["libby_settings"] = Path(libby["settings_folder"]).expanduser()
+                cfg.libby_settings = Path(libby["settings_folder"]).expanduser()
             if "merge" in libby:
-                kwargs["libby_merge"] = bool(libby["merge"])
+                cfg.libby_merge = bool(libby["merge"])
             if "merge_format" in libby:
-                kwargs["libby_merge_format"] = str(libby["merge_format"])
+                cfg.libby_merge_format = str(libby["merge_format"])
             if "chapters" in libby:
-                kwargs["libby_chapters"] = bool(libby["chapters"])
+                cfg.libby_chapters = bool(libby["chapters"])
             if "keep_cover" in libby:
-                kwargs["libby_keep_cover"] = bool(libby["keep_cover"])
+                cfg.libby_keep_cover = bool(libby["keep_cover"])
             if "book_folder_format" in libby:
-                kwargs["libby_book_folder_format"] = str(libby["book_folder_format"])
+                cfg.libby_book_folder_format = str(libby["book_folder_format"])
 
-        return cls(**kwargs)
+        return cfg
 
     def save(self, path: Path | None = None) -> None:
         """Persist current config to YAML."""
@@ -139,11 +142,13 @@ class Config:
             "destination": str(self.destination),
             "archive_extensions": sorted(self.archive_extensions),
             "audio_extensions": sorted(self.audio_extensions),
+            "companion_extensions": sorted(self.companion_extensions),
             "auto_extract": self.auto_extract,
             "delete_after_extract": self.delete_after_extract,
             "filename_patterns": self.filename_patterns,
             "min_file_size": self.min_file_size,
             "move_log": str(self.move_log),
+            "author_name_format": self.author_name_format,
             "libby": {
                 "settings_folder": str(self.libby_settings),
                 "merge": self.libby_merge,

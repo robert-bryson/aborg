@@ -107,8 +107,8 @@ Key settings:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `source_dirs` | `~/Downloads` | Directories to scan for new audiobooks |
-| `destination` | `~/audiobooks` | Root of the organized collection |
+| `source_dirs` | *(none)* | Directories to scan for new audiobooks |
+| `destination` | *(none)* | Root of the organized collection |
 | `auto_extract` | `true` | Extract zip/rar/7z archives at destination |
 | `delete_after_extract` | `false` | Remove archive after successful extraction |
 | `min_file_size` | `1 MB` | Ignore files smaller than this |
@@ -287,6 +287,7 @@ aborg rename [OPTIONS]
 |--------|-------------|
 | `--path PATH` | Collection root (defaults to configured destination) |
 | `--dry-run` | Show what would be renamed without making changes |
+| `-y, --yes` | Skip confirmation prompt |
 | `--cache` | Use fingerprint-based cache from previous scans |
 
 ---

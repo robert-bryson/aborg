@@ -43,6 +43,9 @@ _NON_AUTHOR_WORDS = frozenset(
     }
 )
 
+# Single words that are articles/determiners, never valid standalone author names.
+_ARTICLE_WORDS = frozenset({"the", "a", "an", "el", "la", "le", "les", "los", "las", "der", "die", "das", "il"})
+
 # Regex matching copyright / production notices that appear in artist tags.
 _COPYRIGHT_RE = re.compile(
     r"^\s*(?:\(c\)|\(p\)|©|copyright\b)",
@@ -231,6 +234,9 @@ def looks_like_author(name: str) -> bool:
         return False
     words = name.lower().split()
     if not words:
+        return False
+    # Single article/determiner is never a valid author
+    if len(words) == 1 and words[0] in _ARTICLE_WORDS:
         return False
     bad = sum(1 for w in words if w in _NON_AUTHOR_WORDS)
     if bad >= 2:

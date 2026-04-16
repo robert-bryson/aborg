@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import unicodedata
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,6 +50,11 @@ _JUNK_PREFIXES = (
 
 # Regex to strip Windows download-duplicate suffixes like "(1)", " (2)" etc.
 _DUP_SUFFIX_RE = re.compile(r"\s*\(\d+\)$")
+
+
+def _normalize_dedup(s: str) -> str:
+    """Normalize a string for deduplication (case + accent folding)."""
+    return unicodedata.normalize("NFKD", s.lower()).encode("ascii", "ignore").decode()
 
 # Cover-art filenames recognised by Audiobookshelf.
 COVER_NAMES = frozenset({"cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png"})
@@ -128,12 +134,16 @@ def scan_sources(
 
             if result:
                 result.source_dir = src_dir
-                dedup_key = f"{result.meta.author}::{result.meta.title}".lower()
+                dedup_key = _normalize_dedup(
+                    f"{result.meta.author}::{result.meta.title}"
+                )
                 if dedup_key in seen_titles:
                     _log(f"  [yellow]skip duplicate[/yellow] {entry.name}")
                     continue
                 seen_titles.add(dedup_key)
-                _log(f"  [green]✓[/green] {result.meta.author} — {result.meta.title}")
+                _log(
+                    f"  [green]✓[/green] {result.meta.author} — {result.meta.title}"
+                )
                 results.append(result)
                 _hit(result)
 

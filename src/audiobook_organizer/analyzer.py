@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -17,6 +18,10 @@ from .config import Config
 from .parser import flip_author_name, is_last_first, looks_like_author
 from .scanner import CollectionScan, ScanResult, scan_collection
 
+
+def _fold_accents(s: str) -> str:
+    """Fold accented characters to their ASCII equivalents."""
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
 
 @dataclass
 class FixAction:
@@ -173,7 +178,7 @@ def _check_duplicates(items: list[ScanResult], report: AnalysisReport) -> None:
     """Detect possible duplicate audiobooks by fuzzy title matching."""
     by_author: defaultdict[str, list[ScanResult]] = defaultdict(list)
     for item in items:
-        by_author[item.meta.author.lower()].append(item)
+        by_author[_fold_accents(item.meta.author.lower())].append(item)
 
     for author_items in by_author.values():
         n = len(author_items)
@@ -181,7 +186,11 @@ def _check_duplicates(items: list[ScanResult], report: AnalysisReport) -> None:
             a = author_items[i]
             for j in range(i + 1, n):
                 b = author_items[j]
-                ratio = SequenceMatcher(None, a.meta.title.lower(), b.meta.title.lower()).ratio()
+                ratio = SequenceMatcher(
+                    None,
+                    _fold_accents(a.meta.title.lower()),
+                    _fold_accents(b.meta.title.lower()),
+                ).ratio()
                 if ratio > 0.85:
                     report.duplicates.append((a, b))
                     report.issues.append(
@@ -200,7 +209,9 @@ def _check_author_variants(authors: set[str], report: AnalysisReport) -> None:
     author_list = sorted(authors)
     for i, a in enumerate(author_list):
         for b in author_list[i + 1 :]:
-            ratio = SequenceMatcher(None, a.lower(), b.lower()).ratio()
+            ratio = SequenceMatcher(
+                None, _fold_accents(a.lower()), _fold_accents(b.lower())
+            ).ratio()
             if 0.75 < ratio < 1.0:
                 report.author_variants.append((a, b))
                 report.issues.append(

@@ -104,6 +104,25 @@ class TestOrganize:
         # The evil file must NOT exist outside dest
         assert not (tmp_path / "etc" / "evil.txt").exists()
 
+    def test_zip_slip_sibling_prefix_attack(self, tmp_path):
+        """A zip member escaping to a sibling dir with a matching name prefix is blocked."""
+        zip_path = tmp_path / "src" / "tricky.zip"
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            # "../Test Book_evil/payload.txt" resolves to a sibling whose name
+            # starts with the dest dir name — the old startswith() check missed this.
+            zf.writestr("../Test Book_evil/payload.txt", b"pwned")
+
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
+        item = _scan_result(zip_path, kind="archive")
+
+        actions = organize([item], cfg)
+        assert len(actions) == 1
+        # The payload must NOT exist anywhere outside dest
+        evil_dir = dest / "Test Author" / "Test Book_evil"
+        assert not evil_dir.exists()
+
     def test_log_created(self, tmp_path):
         src = _write(tmp_path / "src" / "book.mp3")
         log = tmp_path / "moves.log"

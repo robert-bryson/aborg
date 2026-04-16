@@ -90,6 +90,36 @@ class TestAnalyzeCollection:
         # fuzzy matching should catch these (ratio > 0.85)
         assert len(report.duplicates) >= 1
 
+    def test_detects_accented_duplicates(self, tmp_path):
+        """Accented vs unaccented titles under the same author should be flagged."""
+        _make_audio(tmp_path / "Author" / "Café Stories" / "audio.mp3")
+        _make_audio(tmp_path / "Author" / "Cafe Stories" / "audio.mp3")
+
+        cfg = make_cfg()
+        report = analyze_collection(tmp_path, cfg)
+        assert len(report.duplicates) >= 1
+
+    def test_detects_accented_author_variants(self, tmp_path):
+        """Authors with accented chars that are similar but not identical after
+        folding should be flagged as variants."""
+        _make_audio(tmp_path / "García Lorca, Federico" / "Book A" / "audio.mp3")
+        _make_audio(tmp_path / "Garcia Lorca, F." / "Book B" / "audio.mp3")
+
+        cfg = make_cfg()
+        report = analyze_collection(tmp_path, cfg)
+        assert len(report.author_variants) >= 1
+
+    def test_detects_accented_cross_author_duplicates(self, tmp_path):
+        """Same book under accent-variant author names should be flagged as duplicate."""
+        _make_audio(tmp_path / "Garcia Marquez" / "One Hundred Years" / "audio.mp3")
+        _make_audio(tmp_path / "García Márquez" / "One Hundred Years" / "audio.mp3")
+
+        cfg = make_cfg()
+        report = analyze_collection(tmp_path, cfg)
+        # These are under different authors (accent variants) but the
+        # duplicate check groups by accent-folded author, so should be found
+        assert len(report.duplicates) >= 1
+
 
 class TestApplyFixes:
     def test_fix_removes_empty_dir(self, tmp_path):

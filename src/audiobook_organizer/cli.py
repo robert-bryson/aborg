@@ -89,12 +89,20 @@ def _make_hit_callback(
         if result.meta.series:
             seq = result.meta.sequence or "?"
             series = f"  [dim]({result.meta.series} #{seq})[/dim]"
+        author = result.meta.author
+        warn = ""
+        if (
+            author != "Unknown Author"
+            and " " not in author
+            and "," not in author
+        ):
+            warn = "  [yellow]\u26a0 single-name author[/yellow]"
         console.print(
             f"{tag} [dim]{counters.count:>3}.[/dim]"
-            f" [bold]{result.meta.author}[/bold] \u2014"
+            f" [bold]{author}[/bold] \u2014"
             f" {result.meta.title}{series}"
             f"  [dim]{_human_size(result.size)}[/dim]"
-            f"  [blue]\u2192 {dest_rel}[/blue]"
+            f"  [blue]\u2192 {dest_rel}[/blue]{warn}"
         )
 
     return _on_hit
@@ -1171,9 +1179,10 @@ def config_cmd(ctx: click.Context, show: bool) -> None:
     help="Collection root (defaults to configured destination).",
 )
 @click.option("--dry-run", is_flag=True, help="Show what would be renamed.")
+@click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt.")
 @click.option("--cache", is_flag=True, help="Use cached results from previous scans.")
 @click.pass_context
-def rename(ctx: click.Context, path: str | None, dry_run: bool, cache: bool) -> None:
+def rename(ctx: click.Context, path: str | None, dry_run: bool, yes: bool, cache: bool) -> None:
     """Rename folders in an existing collection to match Audiobookshelf conventions."""
     cfg = _require_cfg(ctx)
     root = Path(path) if path else cfg.destination
@@ -1191,6 +1200,7 @@ def rename(ctx: click.Context, path: str | None, dry_run: bool, cache: bool) -> 
         scan_cache.save()
 
     renames: list[tuple[Path, Path]] = []
+    skipped: int = 0
 
     for item in items:
         if not item.path or item.meta.title == "Unknown Title":
@@ -1198,6 +1208,13 @@ def rename(ctx: click.Context, path: str | None, dry_run: bool, cache: bool) -> 
         expected_name = item.meta.dest_folder_name()
         if item.path.name != expected_name:
             new_path = item.path.parent / expected_name
+            if new_path.exists():
+                console.print(
+                    f"  [yellow]⚠ skip conflict:[/yellow] [dim]{item.path.name}[/dim]"
+                    f"  [blue]→[/blue] [dim]{new_path.name}[/dim] (target exists)"
+                )
+                skipped += 1
+                continue
             renames.append((item.path, new_path))
 
     if not renames:
@@ -1211,10 +1228,16 @@ def rename(ctx: click.Context, path: str | None, dry_run: bool, cache: bool) -> 
         console.print(
             f"  [dim]{i:>3}.[/dim] [dim]{old.name}[/dim]  [blue]→[/blue] [green]{new.name}[/green]"
         )
-        if not dry_run:
-            old.rename(new)
+
+    if skipped:
+        console.print(f"\n[yellow]Skipped {skipped} conflict(s).[/yellow]")
 
     if not dry_run:
+        if not yes and not click.confirm(f"\nRename {len(renames)} folder(s)?"):
+            console.print("[yellow]Aborted.[/yellow]")
+            return
+        for old, new in renames:
+            old.rename(new)
         console.print(f"\n[green]Renamed {len(renames)} folder(s).[/green]")
 
 

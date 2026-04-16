@@ -329,6 +329,21 @@ class TestLooksLikeAuthor:
         assert looks_like_author("TBD") is False
         assert looks_like_author("tbd") is False
 
+    def test_article_only_rejected(self):
+        """Single articles/determiners should not be valid author names."""
+        assert looks_like_author("The") is False
+        assert looks_like_author("the") is False
+        assert looks_like_author("A") is False
+        assert looks_like_author("An") is False
+        assert looks_like_author("El") is False
+        assert looks_like_author("La") is False
+        assert looks_like_author("Le") is False
+
+    def test_article_in_real_name_ok(self):
+        """Articles as part of a multi-word name should still pass."""
+        assert looks_like_author("The Beatles") is True
+        assert looks_like_author("El Greco") is True
+
 
 # ── normalize_path_name ──────────────────────────────────────────────────
 

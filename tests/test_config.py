@@ -50,10 +50,13 @@ class TestConfigLoad:
         assert cfg.min_file_size == 500
 
     def test_load_empty_yaml(self, tmp_path):
+        """An empty config file should still produce sensible defaults."""
         cfg_file = tmp_path / "config.yaml"
         cfg_file.write_text("")
         cfg = Config.load(cfg_file)
-        assert cfg.auto_extract is False  # zero-value default
+        assert cfg.auto_extract is True  # sensible default
+        assert cfg.audio_extensions  # should have default extensions
+        assert cfg.filename_patterns  # should have default patterns
 
     def test_load_invalid_yaml_raises(self, tmp_path):
         cfg_file = tmp_path / "config.yaml"
@@ -83,6 +86,16 @@ class TestConfigLoad:
         cfg = Config.load(cfg_file)
         assert cfg.author_name_format == "last_first"  # default preserved
 
+    def test_source_dirs_deduplicated_at_load(self, tmp_path):
+        """Duplicate source_dirs should be removed when loading config."""
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(
+            yaml.dump({"source_dirs": ["/a/b", "/c/d", "/a/b", "/c/d", "/a/b"]})
+        )
+        cfg = Config.load(cfg_file)
+        assert len(cfg.source_dirs) == 2
+        assert cfg.source_dirs == [Path("/a/b"), Path("/c/d")]
+
 
 class TestConfigSave:
     def test_save_creates_file(self, tmp_path):
@@ -106,3 +119,29 @@ class TestConfigSave:
         assert loaded.auto_extract is False
         assert loaded.min_file_size == 42
         assert len(loaded.source_dirs) == 2
+
+    def test_roundtrip_all_fields(self, tmp_path):
+        """Save and load should preserve companion_extensions and author_name_format."""
+        original = Config(
+            source_dirs=[Path("/src")],
+            destination=Path("/dest"),
+            companion_extensions=frozenset({".pdf", ".epub"}),
+            author_name_format="first_last",
+        )
+        out = tmp_path / "config.yaml"
+        original.save(out)
+        loaded = Config.load(out)
+        assert loaded.companion_extensions == frozenset({".pdf", ".epub"})
+        assert loaded.author_name_format == "first_last"
+
+    def test_minimal_config_gets_defaults(self, tmp_path):
+        """A config with just source_dirs and destination should still be functional."""
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(
+            yaml.dump({"source_dirs": ["/src"], "destination": "/dest"})
+        )
+        cfg = Config.load(cfg_file)
+        assert cfg.audio_extensions  # has default audio extensions
+        assert cfg.archive_extensions  # has default archive extensions
+        assert cfg.filename_patterns  # has default patterns
+        assert cfg.min_file_size > 0  # has a sane minimum

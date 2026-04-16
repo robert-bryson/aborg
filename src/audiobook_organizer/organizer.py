@@ -58,9 +58,10 @@ def _handle_archive(item: ScanResult, dest_dir: Path, cfg: Config, *, dry_run: b
     try:
         with zipfile.ZipFile(item.path) as zf:
             # Security: validate all member paths to prevent zip-slip
+            resolved_dest = dest_dir.resolve()
             for member in zf.namelist():
                 member_path = (dest_dir / member).resolve()
-                if not str(member_path).startswith(str(dest_dir.resolve())):
+                if not member_path.is_relative_to(resolved_dest):
                     raise ValueError(f"Unsafe zip member path: {member}")
             zf.extractall(dest_dir)
     except (zipfile.BadZipFile, ValueError):

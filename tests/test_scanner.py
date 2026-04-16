@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from audiobook_organizer.config import Config
-from audiobook_organizer.scanner import scan_collection, scan_sources
+from audiobook_organizer.scanner import _normalize_dedup, scan_collection, scan_sources
 
 from .conftest import make_cfg
 
@@ -161,6 +161,28 @@ class TestScanSources:
         ghost.unlink()
         results, _ = scan_sources(cfg)
         # Should still find the book with remaining files
+        assert len(results) == 1
+
+    def test_deduplicates_accented_authors(self, tmp_path):
+        """Authors with accented vs unaccented names should be deduped."""
+        s1 = tmp_path / "dir1"
+        s2 = tmp_path / "dir2"
+        _make_audio_file(s1 / "Gabriel Garcia Marquez - One Hundred Years.mp3")
+        _make_audio_file(s2 / "Gabriel García Márquez - One Hundred Years.mp3")
+
+        cfg = make_cfg(source_dirs=[s1, s2])
+        results, _ = scan_sources(cfg)
+        assert len(results) == 1
+
+    def test_deduplicates_accented_titles(self, tmp_path):
+        """Titles with accented vs unaccented characters should be deduped."""
+        s1 = tmp_path / "dir1"
+        s2 = tmp_path / "dir2"
+        _make_audio_file(s1 / "Author - Café Stories.mp3")
+        _make_audio_file(s2 / "Author - Cafe Stories.mp3")
+
+        cfg = make_cfg(source_dirs=[s1, s2])
+        results, _ = scan_sources(cfg)
         assert len(results) == 1
 
 
@@ -438,3 +460,22 @@ class TestMessyAsimovCollection:
         found = next(r for r in collection.items if "1951" in r.path.name)
         assert found.meta.dest_folder_name() == "1951 - Book 1 - Foundation"
         assert str(found.meta.dest_relative()) == "Asimov, Issac/1951 - Book 1 - Foundation"
+
+
+# ── _normalize_dedup ─────────────────────────────────────────────────────
+
+
+class TestNormalizeDedup:
+    def test_case_insensitive(self):
+        assert _normalize_dedup("Author::Title") == _normalize_dedup("author::title")
+
+    def test_accent_folding(self):
+        assert _normalize_dedup("García Márquez") == _normalize_dedup("Garcia Marquez")
+
+    def test_combined(self):
+        a = _normalize_dedup("Gabriel García Márquez::Cien años de soledad")
+        b = _normalize_dedup("gabriel garcia marquez::cien anos de soledad")
+        assert a == b
+
+    def test_preserves_distinctness(self):
+        assert _normalize_dedup("Author A") != _normalize_dedup("Author B")
