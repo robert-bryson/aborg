@@ -6,6 +6,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from . import __version__
 from .analyzer import AnalysisReport, FixAction, analyze_collection, apply_fixes
 from .cache import ScanCache
 from .config import DEFAULT_CONFIG_PATH, Config
@@ -1215,3 +1217,94 @@ def rename(ctx: click.Context, path: str | None, dry_run: bool, cache: bool) -> 
 
     if not dry_run:
         console.print(f"\n[green]Renamed {len(renames)} folder(s).[/green]")
+
+
+# ── about ────────────────────────────────────────────────────────────────
+
+
+def _get_git_commit() -> str | None:
+    """Return the short commit hash of the installed package, or *None*."""
+    pkg_dir = Path(__file__).resolve().parent
+    # Walk up to find the repo root (contains .git)
+    for ancestor in pkg_dir.parents:
+        if (ancestor / ".git").is_dir():
+            try:
+                result = subprocess.run(
+                    ["git", "-C", str(ancestor), "log", "-1", "--format=%h (%ci)"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    return result.stdout.strip()
+            except (OSError, subprocess.SubprocessError):  # git not found / failed
+                pass
+            break
+    return None
+
+
+@cli.command()
+def about() -> None:
+    """Show version, build, and project information."""
+    table = Table(title="aborg", show_header=False)
+    table.add_column("Key", style="bold")
+    table.add_column("Value")
+
+    table.add_row("Version", __version__)
+
+    commit = _get_git_commit()
+    if commit:
+        table.add_row("Last commit", commit)
+
+    table.add_row("Python", f"{sys.version} ({sys.executable})")
+    table.add_row("Install path", str(Path(__file__).resolve().parent))
+    table.add_row("Config path", str(DEFAULT_CONFIG_PATH))
+    table.add_row("Repository", "https://github.com/robert-bryson/aborg")
+    table.add_row("Website", "https://rsmb.tv")
+    table.add_row("License", "MIT")
+
+    console.print(table)
+
+
+# ── tldr ─────────────────────────────────────────────────────────────────
+
+
+@cli.command()
+def tldr() -> None:
+    """Show common commands and quick-start examples."""
+    text = """\
+[bold underline]Quick Start[/bold underline]
+
+  [bold]aborg config[/bold]              Set up aborg interactively (creates ~/.aborg/config.yaml)
+  [bold]aborg config --show[/bold]       Show current configuration
+
+[bold underline]Scanning & Organizing[/bold underline]
+
+  [bold]aborg scan[/bold]                Discover audiobooks in your source directories
+  [bold]aborg scan -d ~/Downloads[/bold] Scan an extra directory alongside configured sources
+  [bold]aborg org[/bold]                 Scan and move new audiobooks into your collection
+  [bold]aborg org --dry-run[/bold]       Preview what would be organized without making changes
+  [bold]aborg org --copy[/bold]          Copy instead of move (keeps originals)
+  [bold]aborg undo[/bold]                Undo the last organize operation
+
+[bold underline]Collection Management[/bold underline]
+
+  [bold]aborg analyze[/bold]             Check your collection for issues (duplicates, naming, etc.)
+  [bold]aborg analyze --fix[/bold]       Auto-fix detected issues
+  [bold]aborg analyze --fix --dry-run[/bold]  Preview fixes without applying
+  [bold]aborg rename --dry-run[/bold]    Preview folder renames to match Audiobookshelf conventions
+  [bold]aborg rename[/bold]              Apply folder renames
+
+[bold underline]Libby / OverDrive[/bold underline]
+
+  [bold]aborg fetch --setup CODE[/bold]  Link your Libby account with an 8-digit code
+  [bold]aborg fetch --list[/bold]        List current audiobook loans
+  [bold]aborg fetch --latest 1[/bold]    Download the most recent loan
+  [bold]aborg fetch --latest 1 --organize[/bold]  Download and auto-organize into your collection
+
+[bold underline]Utilities[/bold underline]
+
+  [bold]aborg parse "Author - Title"[/bold]  Test how a filename would be parsed
+  [bold]aborg about[/bold]               Show version and project info
+"""
+    console.print(text)

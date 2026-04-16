@@ -42,17 +42,6 @@ auto_extract: true
 # Delete archive after successful extraction
 delete_after_extract: false
 
-# Directory structure template (Audiobookshelf convention)
-# Placeholders: {author}, {series}, {sequence}, {title}, {year}, {narrator}
-structure_template: "{author}/{series}/{title}"
-structure_template_no_series: "{author}/{title}"
-
-# Title folder format (Audiobookshelf-compatible)
-# Placeholders: {year}, {sequence}, {title}, {narrator}
-title_format: "{year} - {title} {{{narrator}}}"
-title_format_no_narrator: "{year} - {title}"
-title_format_no_year: "{title}"
-
 # Filename patterns to parse (tried in order, first match wins)
 # Groups: author, title, series, sequence, year, narrator
 filename_patterns:

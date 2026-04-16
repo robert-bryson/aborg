@@ -103,10 +103,10 @@ def _move_or_copy(src: Path, dest: Path, *, copy: bool, dry_run: bool) -> Path |
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
-        # Avoid clobbering — add a suffix
+        # Avoid clobbering — add a timestamp suffix (with microseconds to prevent collisions)
         stem = dest.stem
         suffix = dest.suffix
-        dest = dest.with_name(f"{stem}_{datetime.now(timezone.utc):%Y%m%d%H%M%S}{suffix}")
+        dest = dest.with_name(f"{stem}_{datetime.now(timezone.utc):%Y%m%d%H%M%S%f}{suffix}")
     if copy:
         shutil.copy2(str(src), str(dest))
     else:

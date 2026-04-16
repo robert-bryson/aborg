@@ -114,8 +114,6 @@ Key settings:
 | `min_file_size` | `1 MB` | Ignore files smaller than this |
 | `filename_patterns` | 4 built-in | Regex patterns for parsing filenames (tried in order) |
 | `author_name_format` | `last_first` | Author folder format: `last_first` ("Austen, Jane") or `first_last` ("Jane Austen") |
-| `structure_template` | `{author}/{series}/{title}` | Directory hierarchy template |
-| `title_format` | `{year} - {title} {{narrator}}` | Title folder name format |
 | `archive_extensions` | `.zip .rar .7z` | File extensions treated as archives |
 | `audio_extensions` | `.m4b .mp3 .m4a .ogg .opus .flac .wma .aac` | File extensions treated as audio |
 | `companion_extensions` | `.jpg .jpeg .png .pdf .epub .nfo .cue .txt .opf` | Companion files moved alongside audio |
@@ -163,6 +161,8 @@ Metadata is collected from three sources (highest priority first):
 | `rename` | Batch-rename folders to conventions |
 | `undo` | Revert last organize batch |
 | `config` | Show or initialize configuration |
+| `about` | Show version, build, and project info |
+| `tldr` | Show common commands and quick-start examples |
 
 All destructive commands support `--dry-run`. Use `-c / --config` before any command to load a custom config file.
 
@@ -318,6 +318,28 @@ aborg config [OPTIONS]
 | `--show` | Print the current configuration and exit |
 
 When no config file exists, `aborg config` automatically starts an interactive wizard that prompts for source directories, destination, and other key settings, then writes `~/.aborg/config.yaml`.
+
+---
+
+### `about`
+
+Show version, build, and project information.
+
+```
+aborg about
+```
+
+Displays the installed version, last git commit (when running from source), Python version, install path, config path, repository URL, website, and license.
+
+---
+
+### `tldr`
+
+Show common commands and quick-start examples grouped by task.
+
+```
+aborg tldr
+```
 
 ## License
 

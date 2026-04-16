@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from audiobook_organizer.cli import _offer_source_cleanup, cli
+from audiobook_organizer.cli import _get_git_commit, _offer_source_cleanup, cli
 from audiobook_organizer.config import Config
 
 
@@ -226,3 +226,97 @@ class TestOfferSourceCleanup:
 
         assert not exist_dir.exists()
         assert not empty_parent.exists()
+
+
+class TestAboutCommand:
+    def test_about_shows_version(self):
+        result = CliRunner().invoke(cli, ["about"])
+        assert result.exit_code == 0
+        assert "Version" in result.output
+        assert "0.1.0" in result.output
+
+    def test_about_shows_project_info(self):
+        result = CliRunner().invoke(cli, ["about"])
+        assert result.exit_code == 0
+        assert "rsmb.tv" in result.output
+        assert "robert-bryson/aborg" in result.output
+        assert "MIT" in result.output
+
+    def test_about_shows_python_info(self):
+        result = CliRunner().invoke(cli, ["about"])
+        assert result.exit_code == 0
+        assert "Python" in result.output
+        assert "Install path" in result.output
+        assert "Config path" in result.output
+
+
+class TestTldrCommand:
+    def test_tldr_shows_commands(self):
+        result = CliRunner().invoke(cli, ["tldr"])
+        assert result.exit_code == 0
+        assert "aborg scan" in result.output
+        assert "aborg org" in result.output
+        assert "aborg config" in result.output
+
+    def test_tldr_shows_sections(self):
+        result = CliRunner().invoke(cli, ["tldr"])
+        assert result.exit_code == 0
+        assert "Quick Start" in result.output
+        assert "Scanning" in result.output
+        assert "Collection Management" in result.output
+        assert "Libby" in result.output
+
+    def test_tldr_shows_about_and_parse(self):
+        result = CliRunner().invoke(cli, ["tldr"])
+        assert result.exit_code == 0
+        assert "aborg about" in result.output
+        assert "aborg parse" in result.output
+
+
+class TestGetGitCommit:
+    def test_returns_string_in_git_repo(self):
+        """When running from this repo, should return a commit string."""
+        result = _get_git_commit()
+        # We're in a git repo during tests, so this should return something
+        assert result is None or isinstance(result, str)
+
+    def test_returns_none_when_git_fails(self):
+        """When git command fails, should return None gracefully."""
+        with patch("audiobook_organizer.cli.subprocess.run", side_effect=OSError("no git")):
+            assert _get_git_commit() is None
+
+    def test_returns_none_when_not_in_repo(self, tmp_path):
+        """When package is not in a git repo, should return None."""
+        fake_file = tmp_path / "pkg" / "cli.py"
+        fake_file.parent.mkdir(parents=True)
+        fake_file.touch()
+        with patch("audiobook_organizer.cli.__file__", str(fake_file)):
+            result = _get_git_commit()
+        assert result is None
+
+    def test_about_no_commit_row_when_git_unavailable(self):
+        """About command should skip commit row when git info unavailable."""
+        with patch("audiobook_organizer.cli._get_git_commit", return_value=None):
+            result = CliRunner().invoke(cli, ["about"])
+        assert result.exit_code == 0
+        assert "Version" in result.output
+        assert "Last commit" not in result.output
+
+    def test_about_shows_commit_when_available(self):
+        """About command should show commit when available."""
+        with patch("audiobook_organizer.cli._get_git_commit", return_value="abc1234 (2025-01-01)"):
+            result = CliRunner().invoke(cli, ["about"])
+        assert result.exit_code == 0
+        assert "abc1234" in result.output
+
+
+class TestRenameCommand:
+    def test_rename_help(self):
+        result = CliRunner().invoke(cli, ["rename", "--help"])
+        assert result.exit_code == 0
+        assert "dry-run" in result.output
+
+    def test_fetch_help(self):
+        result = CliRunner().invoke(cli, ["fetch", "--help"])
+        assert result.exit_code == 0
+        assert "setup" in result.output

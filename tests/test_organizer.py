@@ -146,3 +146,32 @@ class TestUndo:
         assert len(undone) == 1
         # File should NOT have been moved back
         assert not src.exists()
+
+
+class TestCollisionHandling:
+    def test_collision_adds_unique_suffix(self, tmp_path):
+        """When destination file already exists, a unique timestamp suffix is added."""
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, move_log=tmp_path / "log")
+
+        # Create first file and organize it
+        src1 = _write(tmp_path / "src1" / "book.mp3")
+        item1 = _scan_result(src1)
+        actions1 = organize([item1], cfg)
+        assert len(actions1) == 1
+        first_dest = actions1[0][1]
+
+        # Create second file with same metadata (will collide)
+        src2 = _write(tmp_path / "src2" / "book.mp3")
+        item2 = _scan_result(src2)
+        actions2 = organize([item2], cfg)
+        assert len(actions2) == 1
+        second_dest = actions2[0][1]
+
+        # Both should exist at different paths
+        assert first_dest.exists()
+        assert second_dest.exists()
+        assert first_dest != second_dest
+        # Suffix should contain microseconds (20 chars: YYYYMMDDHHMMSS + 6 digits)
+        suffix_part = second_dest.stem.split("_")[-1]
+        assert len(suffix_part) == 20
