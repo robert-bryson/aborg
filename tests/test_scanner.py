@@ -209,6 +209,33 @@ class TestScanSources:
         results, _ = scan_sources(cfg)
         assert len(results) == 1
 
+    def test_normalizes_accented_author_across_books(self, tmp_path):
+        """Different books by accented/unaccented author variants get a single author name."""
+        s1 = tmp_path / "dir1"
+        s2 = tmp_path / "dir2"
+        _make_audio_file(s1 / "Gabriel Garcia Marquez - One Hundred Years.mp3")
+        _make_audio_file(s2 / "Gabriel García Márquez - Love in the Time.mp3")
+
+        cfg = make_cfg(source_dirs=[s1, s2])
+        results, _ = scan_sources(cfg)
+        assert len(results) == 2
+        # Both should use the same canonical author name
+        authors = {r.meta.author for r in results}
+        assert len(authors) == 1
+
+    def test_prefers_accented_author_form(self, tmp_path):
+        """When accented variant appears second, it should become canonical."""
+        s1 = tmp_path / "dir1"
+        s2 = tmp_path / "dir2"
+        _make_audio_file(s1 / "Gabriel Garcia Marquez - One Hundred Years.mp3")
+        _make_audio_file(s2 / "Gabriel García Márquez - Love in the Time.mp3")
+
+        cfg = make_cfg(source_dirs=[s1, s2])
+        results, _ = scan_sources(cfg)
+        # The accented form should win
+        for r in results:
+            assert r.meta.author == "Gabriel García Márquez"
+
 
 class TestScanCollection:
     def test_scans_author_title_structure(self, tmp_path):

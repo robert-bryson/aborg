@@ -86,7 +86,7 @@ def libby_setup(settings_folder: Path, code: str) -> tuple[bool, str]:
         client.get_chip()
         client.clone_by_code(code)
         return True, "Libby account linked successfully."
-    except Exception as exc:
+    except (OSError, RuntimeError, ValueError, KeyError) as exc:
         return False, f"Libby setup failed: {exc}"
 
 

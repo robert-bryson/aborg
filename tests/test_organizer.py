@@ -103,7 +103,7 @@ class TestOrganize:
         assert actual_dest.suffix == ".rar"
 
     def test_zip_slip_protection(self, tmp_path):
-        """Ensure zip-slip attacks are blocked."""
+        """Ensure zip-slip attacks are blocked — archive is refused entirely."""
         zip_path = tmp_path / "src" / "malicious.zip"
         zip_path.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(zip_path, "w") as zf:
@@ -113,11 +113,13 @@ class TestOrganize:
         cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
         item = _scan_result(zip_path, kind="archive")
 
-        # Should not crash — falls back to moving the file
+        # Should not crash — refuses the archive, no action taken
         actions = organize([item], cfg)
-        assert len(actions) == 1
+        assert len(actions) == 0
         # The evil file must NOT exist outside dest
         assert not (tmp_path / "etc" / "evil.txt").exists()
+        # The original zip is left untouched
+        assert zip_path.exists()
 
     def test_zip_slip_sibling_prefix_attack(self, tmp_path):
         """A zip member escaping to a sibling dir with a matching name prefix is blocked."""
@@ -132,11 +134,14 @@ class TestOrganize:
         cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
         item = _scan_result(zip_path, kind="archive")
 
+        # Unsafe zip is refused entirely
         actions = organize([item], cfg)
-        assert len(actions) == 1
+        assert len(actions) == 0
         # The payload must NOT exist anywhere outside dest
         evil_dir = dest / "Test Author" / "Test Book_evil"
         assert not evil_dir.exists()
+        # Original zip is left untouched
+        assert zip_path.exists()
 
     def test_log_created(self, tmp_path):
         src = _write(tmp_path / "src" / "book.mp3")
@@ -275,6 +280,27 @@ class TestExtractWithDelete:
         assert not zip_path.exists()
         # Extracted content should exist
         assert (actions[0][1] / "audio.mp3").exists()
+
+
+class TestCorruptZipFallback:
+    def test_bad_zip_falls_back_to_move(self, tmp_path):
+        """A corrupt zip (not a valid archive) should be moved as-is."""
+        zip_path = tmp_path / "src" / "corrupt.zip"
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        zip_path.write_bytes(b"this is not a zip file at all")
+
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
+        item = _scan_result(zip_path, kind="archive")
+
+        actions = organize([item], cfg)
+        assert len(actions) == 1
+        # The corrupt file should have been moved to the destination
+        moved_file = actions[0][1]
+        assert moved_file.exists()
+        assert moved_file.name == "corrupt.zip"
+        # Original should be gone (moved, not copied)
+        assert not zip_path.exists()
 
 
 class TestDirectoryMerge:

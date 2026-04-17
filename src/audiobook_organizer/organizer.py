@@ -71,11 +71,19 @@ def _handle_archive(item: ScanResult, dest_dir: Path, cfg: Config, *, dry_run: b
                 if not member_path.is_relative_to(resolved_dest):
                     raise ValueError(f"Unsafe zip member path: {member}")
             zf.extractall(dest_dir)
-    except (zipfile.BadZipFile, ValueError):
-        # Fall back to just moving the archive
+    except zipfile.BadZipFile:
+        # Corrupt archive — fall back to just moving it
         return _move_or_copy(item.path, dest_dir / item.path.name, copy=False, dry_run=False)
+    except ValueError as exc:
+        # Unsafe zip member path — refuse to extract or move
+        logger.error("Refusing to extract %s: %s", item.path, exc)
+        return None
 
-    if cfg.delete_after_extract and any(dest_dir.iterdir()):
+    try:
+        extracted = any(dest_dir.iterdir())
+    except OSError:
+        extracted = False
+    if cfg.delete_after_extract and extracted:
         item.path.unlink()
 
     return dest_dir
@@ -99,7 +107,7 @@ def _handle_directory(
         shutil.copytree(item.path, dest_dir, dirs_exist_ok=True)
         shutil.rmtree(item.path)
     else:
-        shutil.move(str(item.path), str(dest_dir))
+        shutil.move(item.path, dest_dir)
     return dest_dir
 
 
@@ -120,9 +128,9 @@ def _move_or_copy(src: Path, dest: Path, *, copy: bool, dry_run: bool) -> Path |
         suffix = dest.suffix
         dest = dest.with_name(f"{stem}_{datetime.now(timezone.utc):%Y%m%d%H%M%S%f}{suffix}")
     if copy:
-        shutil.copy2(str(src), str(dest))
+        shutil.copy2(src, dest)
     else:
-        shutil.move(str(src), str(dest))
+        shutil.move(src, dest)
     return dest
 
 
@@ -161,7 +169,7 @@ def undo_last(cfg: Config, *, dry_run: bool = False) -> list[tuple[Path, Path]]:
         src, dest = Path(src_str), Path(dest_str)
         if not dry_run and dest.exists():
             src.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(dest), str(src))
+            shutil.move(dest, src)
         undone.append((dest, src))
 
     if not dry_run:

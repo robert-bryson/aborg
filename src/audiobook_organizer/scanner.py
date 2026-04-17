@@ -107,6 +107,7 @@ def scan_sources(
     results: list[ScanResult] = []
     seen: set[Path] = set()
     seen_titles: set[str] = set()  # deduplicate Windows "(1)" copies
+    seen_authors: dict[str, str] = {}  # normalized → canonical author name
     _log = on_progress or (lambda _msg: None)
     _hit = on_hit or (lambda _r: None)
 
@@ -141,6 +142,27 @@ def scan_sources(
 
             if result:
                 result.source_dir = src_dir
+
+                # ── Author accent normalization ──
+                # Prefer the name variant with more Unicode characters
+                # so "Gabriel García Márquez" wins over "Gabriel Garcia Marquez".
+                author_key = _normalize_dedup(result.meta.author)
+                canonical = seen_authors.get(author_key)
+                if canonical is not None:
+                    new_unicode = sum(1 for c in result.meta.author if ord(c) > 127)
+                    old_unicode = sum(1 for c in canonical if ord(c) > 127)
+                    if new_unicode > old_unicode:
+                        # Upgrade: new form is more accented — update mapping
+                        # and retroactively fix already-collected results.
+                        seen_authors[author_key] = result.meta.author
+                        for prev in results:
+                            if _normalize_dedup(prev.meta.author) == author_key:
+                                prev.meta.author = result.meta.author
+                    else:
+                        result.meta.author = canonical
+                else:
+                    seen_authors[author_key] = result.meta.author
+
                 dedup_key = _normalize_dedup(f"{result.meta.author}::{result.meta.title}")
                 if dedup_key in seen_titles:
                     _log(f"  [yellow]skip duplicate[/yellow] {entry.name}")

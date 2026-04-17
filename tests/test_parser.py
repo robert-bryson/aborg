@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from audiobook_organizer.config import Config
 from audiobook_organizer.parser import (
     AudiobookMeta,
+    _MAX_FOLDER_NAME,
     _clean_tag_title,
     _extract_narrator,
     _is_copyright_notice,
@@ -41,13 +42,22 @@ PATTERNS = list(Config.DEFAULT_PATTERNS)
 
 class TestSanitize:
     def test_removes_unsafe_chars(self):
-        assert _sanitize('foo<>:"/\\|?*bar') == "foobar"
+        assert _sanitize('foo<>"/\\|?*bar') == "foobar"
+
+    def test_replaces_colon_with_dash(self):
+        assert _sanitize("Fascism: A Warning") == "Fascism - A Warning"
+
+    def test_colon_no_trailing_space(self):
+        assert _sanitize("Title:Subtitle") == "Title - Subtitle"
 
     def test_collapses_spaces(self):
         assert _sanitize("too   many   spaces") == "too many spaces"
 
     def test_strips_trailing_dots_and_spaces(self):
         assert _sanitize("title... ") == "title"
+
+    def test_preserves_trailing_initial(self):
+        assert _sanitize("Putnam, Robert D.") == "Putnam, Robert D."
 
     def test_returns_unknown_for_empty(self):
         assert _sanitize("") == "Unknown"
@@ -166,8 +176,32 @@ class TestAudiobookMeta:
 
     def test_dest_folder_name_sanitizes(self):
         meta = AudiobookMeta(title='Bad: "Title" <here>')
-        assert '"' not in meta.dest_folder_name()
-        assert "<" not in meta.dest_folder_name()
+        name = meta.dest_folder_name()
+        assert '"' not in name
+        assert "<" not in name
+        assert ":" not in name
+        assert "Bad - Title here" == name
+
+    def test_dest_folder_name_truncates_long_title(self):
+        long_title = "A" * 200
+        meta = AudiobookMeta(title=long_title)
+        name = meta.dest_folder_name()
+        assert len(name) <= _MAX_FOLDER_NAME + 1  # +1 for the "…"
+        assert name.endswith("…")
+
+    def test_dest_folder_name_no_truncation_short_title(self):
+        meta = AudiobookMeta(title="Short Title")
+        name = meta.dest_folder_name()
+        assert "…" not in name
+
+    def test_dest_relative_preserves_author_initial(self):
+        meta = AudiobookMeta(author="Robert D. Putnam", title="Bowling Alone")
+        rel = meta.dest_relative(author_format="last_first")
+        assert "Putnam, Robert D." in str(rel)
+
+    def test_dest_folder_colon_in_title(self):
+        meta = AudiobookMeta(title="Sapiens: A Brief History of Humankind")
+        assert meta.dest_folder_name() == "Sapiens - A Brief History of Humankind"
 
 
 # ── merge_meta ───────────────────────────────────────────────────────────

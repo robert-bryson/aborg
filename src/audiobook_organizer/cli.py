@@ -9,6 +9,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import click
@@ -70,6 +71,9 @@ def _make_hit_callback(
 ) -> Callable[[ScanResult], None]:
     """Build a scan-hit callback that prints each discovered book."""
     author_fmt = cfg.author_name_format
+    # Track authors for single-name matching and titles per author for fuzzy dedup warnings.
+    known_authors: dict[str, str] = {}  # normalized surname → full name
+    titles_by_author: dict[str, list[str]] = {}  # normalized author → list of titles
 
     def _on_hit(result: ScanResult) -> None:
         counters.count += 1
@@ -92,7 +96,35 @@ def _make_hit_callback(
         author = result.meta.author
         warn = ""
         if author != "Unknown Author" and " " not in author and "," not in author:
-            warn = "  [yellow]\u26a0 single-name author[/yellow]"
+            # Try to match this single-name author against known full-name authors
+            author_low = author.lower()
+            match = known_authors.get(author_low)
+            if match:
+                warn = f"  [yellow]\u26a0 single-name author (possible match: {match})[/yellow]"
+            else:
+                warn = "  [yellow]\u26a0 single-name author[/yellow]"
+
+        # Track full-name authors by surname for single-name matching.
+        if " " in author or "," in author:
+            # Extract surname: last word for "First Last", first part for "Last, First"
+            if "," in author:
+                surname = author.split(",", 1)[0].strip().lower()
+            else:
+                surname = author.rsplit(None, 1)[-1].lower()
+            known_authors[surname] = author
+
+        # Near-duplicate title detection (fuzzy match within same author).
+        author_key = author.lower()
+        title_lower = result.meta.title.lower()
+        near_dupes: list[str] = []
+        for prev_title in titles_by_author.get(author_key, []):
+            if SequenceMatcher(None, title_lower, prev_title.lower()).ratio() > 0.85:
+                near_dupes.append(prev_title)
+        if near_dupes:
+            dup_warn = f"  [yellow]\u26a0 possible duplicate of: {near_dupes[0]}[/yellow]"
+            warn = f"{warn}{dup_warn}" if warn else dup_warn
+        titles_by_author.setdefault(author_key, []).append(result.meta.title)
+
         console.print(
             f"{tag} [dim]{counters.count:>3}.[/dim]"
             f" [bold]{author}[/bold] \u2014"

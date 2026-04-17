@@ -128,7 +128,10 @@ class AudiobookMeta:
         folder = " - ".join(parts)
         if self.narrator:
             folder += f" {{{self.narrator}}}"
-        return _sanitize(folder)
+        folder = _sanitize(folder)
+        if len(folder) > _MAX_FOLDER_NAME:
+            folder = folder[:_MAX_FOLDER_NAME].rstrip(" -") + "…"
+        return folder
 
     def dest_relative(self, *, author_format: str = "") -> Path:
         """Return the relative destination path: ``Author[/Series]/TitleFolder``."""
@@ -143,12 +146,26 @@ class AudiobookMeta:
         return Path(author_dir) / title_dir
 
 
+# Maximum length for a single folder name.  Long titles can breach Windows
+# MAX_PATH (260 chars) once combined with dest root + author + filenames.
+_MAX_FOLDER_NAME = 180
+
+
 def _sanitize(name: str) -> str:
     """Remove or replace filesystem-unsafe characters."""
-    # Replace characters illegal on Windows/Linux
-    name = re.sub(r'[<>:"/\\|?*]', "", name)
-    # Collapse multiple spaces/dots, strip trailing dots/spaces
-    name = re.sub(r"\s{2,}", " ", name).strip(". ")
+    # Replace colons with dashes to preserve readability (e.g. "Fascism: A Warning" → "Fascism - A Warning")
+    name = re.sub(r":\s*", " - ", name)
+    # Remove other characters illegal on Windows/Linux
+    name = re.sub(r'[<>"/\\|?*]', "", name)
+    # Collapse multiple spaces, strip outer whitespace
+    name = re.sub(r"\s{2,}", " ", name).strip()
+    # Strip leading dots
+    name = name.lstrip(".")
+    # Strip trailing dots/spaces, but preserve trailing initials (e.g. "Robert D.")
+    while name and name[-1] in ". ":
+        if name[-1] == "." and re.search(r"\b[A-Za-z]\.$", name):
+            break
+        name = name[:-1]
     return name or "Unknown"
 
 

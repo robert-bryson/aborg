@@ -4,7 +4,7 @@ A CLI tool to scan, organize, and manage audiobook file collections. Outputs an 
 
 ## Features
 
-- **Scan** — discover audiobook files (zip archives, `.m4b`, `.mp3`, loose audio folders) across multiple source directories
+- **Scan** — discover audiobook files (zip archives, `.m4b`, `.mp3`, loose audio folders) across multiple source directories, with accent-aware author deduplication and near-duplicate title warnings
 - **Organize** — move or copy files into a clean `Author / [Series] / Title` hierarchy
 - **Fetch** — download audiobook loans from [Libby/OverDrive](https://www.overdrive.com/apps/libby) and optionally auto-organize them
 - **Analyze** — audit an existing collection for issues: duplicates, missing metadata, inconsistent naming, missing cover art, flat files

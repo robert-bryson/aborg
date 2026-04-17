@@ -65,6 +65,38 @@ class TestLibbySetup:
             mock_client.get_chip.assert_called_once()
             mock_client.clone_by_code.assert_called_once_with("12345678")
 
+    def test_setup_catches_runtime_error(self, tmp_path):
+        """RuntimeError from LibbyClient should be caught and reported."""
+        mock_client = MagicMock()
+        mock_client.get_chip.side_effect = RuntimeError("connection failed")
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "odmpy": MagicMock(),
+                "odmpy.libby": MagicMock(LibbyClient=MagicMock(return_value=mock_client)),
+            },
+        ):
+            ok, msg = libby_setup(tmp_path, "12345678")
+            assert ok is False
+            assert "connection failed" in msg
+
+    def test_setup_catches_os_error(self, tmp_path):
+        """OSError from LibbyClient should be caught and reported."""
+        mock_client = MagicMock()
+        mock_client.get_chip.side_effect = OSError("disk full")
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "odmpy": MagicMock(),
+                "odmpy.libby": MagicMock(LibbyClient=MagicMock(return_value=mock_client)),
+            },
+        ):
+            ok, msg = libby_setup(tmp_path, "12345678")
+            assert ok is False
+            assert "disk full" in msg
+
 
 class TestListLoans:
     @patch("audiobook_organizer.fetcher._odmpy_cmd", return_value=["odmpy"])
