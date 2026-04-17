@@ -60,7 +60,13 @@ class ScanCache:
         if fp is None or fp != entry.get("fp"):
             return None
 
-        return _deserialize(entry["result"])
+        try:
+            return _deserialize(entry["result"])
+        except (KeyError, TypeError):
+            # Corrupt cache entry — discard it silently
+            del self._entries[key]
+            self._dirty = True
+            return None
 
     def put(self, path: Path, result: ScanResult) -> None:
         """Store *result* for *path* with the current filesystem fingerprint."""

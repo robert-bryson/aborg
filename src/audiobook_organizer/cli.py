@@ -7,8 +7,10 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -284,21 +286,17 @@ def _require_cfg(ctx: click.Context) -> Config:
     raise SystemExit(1)
 
 
-# ── scan ─────────────────────────────────────────────────────────────────
+def _run_scan(
+    cfg: Config,
+    *,
+    use_cache: bool,
+) -> tuple[list[ScanResult], list[Path], _ScanCounters] | None:
+    """Run the common scan-and-report logic shared by `scan` and `org`.
 
-
-@cli.command()
-@click.option("-d", "--dir", "extra_dirs", multiple=True, help="Additional directories to scan.")
-@click.option("--table", is_flag=True, help="Show results in a table instead of streaming.")
-@click.option("--cache", is_flag=True, help="Use cached results from previous scans.")
-@click.pass_context
-def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, cache: bool) -> None:
-    """Scan source directories and show discovered audiobook files."""
-    cfg = _require_cfg(ctx)
-    for d in extra_dirs:
-        cfg.source_dirs.append(Path(d).expanduser())
-
-    scan_cache = ScanCache() if cache else None
+    Prints progress, saves cache, and warns about missing dirs.
+    Returns ``None`` (after printing a message) when no items are found.
+    """
+    scan_cache = ScanCache() if use_cache else None
 
     console.print(f"[dim]Scanning: {', '.join(str(d) for d in cfg.source_dirs)}[/dim]")
     console.print(f"[dim]Destination: {cfg.destination}[/dim]\n")
@@ -329,7 +327,29 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, cache: bo
             console.print(
                 "[yellow]No audiobook files found (check source directories above).[/yellow]"
             )
+        return None
+
+    return items, missing_dirs, counters
+
+
+# ── scan ─────────────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.option("-d", "--dir", "extra_dirs", multiple=True, help="Additional directories to scan.")
+@click.option("--table", is_flag=True, help="Show results in a table instead of streaming.")
+@click.option("--cache", is_flag=True, help="Use cached results from previous scans.")
+@click.pass_context
+def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, cache: bool) -> None:
+    """Scan source directories and show discovered audiobook files."""
+    cfg = _require_cfg(ctx)
+    for d in extra_dirs:
+        cfg.source_dirs.append(Path(d).expanduser())
+
+    result = _run_scan(cfg, use_cache=cache)
+    if result is None:
         return
+    items, missing_dirs, counters = result
 
     total_size = sum(i.size for i in items)
     authors = len({i.meta.author for i in items})
@@ -403,38 +423,10 @@ def org(
         )
         raise SystemExit(1)
 
-    scan_cache = ScanCache() if cache else None
-
-    console.print(f"[dim]Scanning: {', '.join(str(d) for d in cfg.source_dirs)}[/dim]")
-    console.print(f"[dim]Destination: {cfg.destination}[/dim]\n")
-
-    counters = _ScanCounters()
-
-    with console.status("[bold green]Scanning…[/bold green]", spinner="dots") as status:
-
-        def _org_progress(msg: str) -> None:
-            status.update(f"[bold green]Scanning:[/bold green] {msg}")
-
-        items, missing_dirs = scan_sources(
-            cfg,
-            on_progress=_org_progress,
-            on_hit=_make_hit_callback(cfg, counters),
-            cache=scan_cache,
-        )
-
-    if scan_cache:
-        scan_cache.save()
-
-    _print_missing_dirs(missing_dirs)
-
-    if not items:
-        if not missing_dirs:
-            console.print("[yellow]No audiobook files found.[/yellow]")
-        else:
-            console.print(
-                "[yellow]No audiobook files found (check source directories above).[/yellow]"
-            )
+    result = _run_scan(cfg, use_cache=cache)
+    if result is None:
         return
+    items, missing_dirs, counters = result
 
     total_size = sum(i.size for i in items)
     authors = len({i.meta.author for i in items})
@@ -453,8 +445,6 @@ def org(
                 f"  Create it or check your config."
             )
             raise SystemExit(1)
-        import tempfile
-
         try:
             with tempfile.NamedTemporaryFile(dir=dest_root):
                 pass
@@ -476,8 +466,6 @@ def org(
     exist_sources: list[Path] = []
     # All items organized in one CLI invocation share a timestamp so undo
     # can treat them as a single batch.
-    from datetime import datetime, timezone
-
     batch_ts = datetime.now(timezone.utc).isoformat()
     with console.status(f"[bold green]{verb}…[/bold green]", spinner="dots") as status:
         for i, item in enumerate(items, 1):

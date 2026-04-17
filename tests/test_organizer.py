@@ -567,3 +567,74 @@ class TestUndoLogTabsInPath:
         assert len(undone) == 1
         assert undone[0][0] == dest_file
         assert undone[0][1] == src
+
+
+class TestCorruptZipCopyFlag:
+    def test_bad_zip_respects_copy_flag(self, tmp_path):
+        """A corrupt zip with --copy should be copied, not moved."""
+        zip_path = tmp_path / "src" / "corrupt.zip"
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        zip_path.write_bytes(b"this is not a zip file at all")
+
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
+        item = _scan_result(zip_path, kind="archive")
+
+        actions = organize([item], cfg, copy=True)
+        assert len(actions) == 1
+        # Original should still exist (copied, not moved)
+        assert zip_path.exists()
+        # Destination should also exist
+        assert actions[0][1].exists()
+
+
+class TestUnsafeZipNoOrphanDir:
+    def test_rejected_zip_does_not_create_dest_dir(self, tmp_path):
+        """When a zip is rejected for unsafe members, dest_dir should not be created."""
+        zip_path = tmp_path / "src" / "evil.zip"
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            info = zipfile.ZipInfo("evil_link")
+            info.external_attr = 0xA0000000  # symlink
+            zf.writestr(info, "/etc/passwd")
+
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
+        item = _scan_result(zip_path, kind="archive")
+
+        organize([item], cfg)
+        # The dest dir for this book should NOT exist
+        expected_dir = dest / "Test Author" / "Test Book"
+        assert not expected_dir.exists()
+
+    def test_rejected_zip_absolute_no_orphan_dir(self, tmp_path):
+        """Zips with absolute paths should not leave orphaned dest dirs."""
+        zip_path = tmp_path / "src" / "abs.zip"
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("/etc/evil.txt", b"pwned")
+
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
+        item = _scan_result(zip_path, kind="archive")
+
+        organize([item], cfg)
+        expected_dir = dest / "Test Author" / "Test Book"
+        assert not expected_dir.exists()
+
+
+class TestZipBackslashTraversal:
+    def test_backslash_dotdot_traversal_refused(self, tmp_path):
+        """Zip members using backslash separators with '..' should be refused."""
+        zip_path = tmp_path / "src" / "backslash.zip"
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("subdir\\..\\..\\escape.txt", b"pwned")
+
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
+        item = _scan_result(zip_path, kind="archive")
+
+        actions = organize([item], cfg)
+        assert len(actions) == 0
+        assert zip_path.exists()

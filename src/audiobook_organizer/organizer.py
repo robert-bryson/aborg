@@ -66,16 +66,18 @@ def _handle_archive(
     if dry_run:
         return dest_dir
 
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
     try:
         with zipfile.ZipFile(item.path) as zf:
-            # Security: validate all member paths to prevent zip-slip
+            # Security: validate all member paths to prevent zip-slip.
+            # Validation runs BEFORE creating dest_dir so a rejected zip
+            # doesn't leave orphaned empty directories.
             resolved_dest = dest_dir.resolve()
             for info in zf.infolist():
                 member = info.filename
+                # Normalise backslashes so traversal via "foo\..\.." is caught
+                member_normalized = member.replace("\\", "/")
                 # Reject absolute paths and directory traversal
-                if member.startswith(("/", "\\")) or ".." in member.split("/"):
+                if member_normalized.startswith("/") or ".." in member_normalized.split("/"):
                     raise ValueError(f"Unsafe zip member path: {member}")
                 # Reject symlink entries (external_attr >> 28 == 0xA for symlinks)
                 if (info.external_attr >> 28) == 0xA:
@@ -83,10 +85,11 @@ def _handle_archive(
                 member_path = (dest_dir / member).resolve()
                 if not member_path.is_relative_to(resolved_dest):
                     raise ValueError(f"Zip member escapes destination: {member}")
+            dest_dir.mkdir(parents=True, exist_ok=True)
             zf.extractall(dest_dir)
     except zipfile.BadZipFile:
-        # Corrupt archive — fall back to just moving it
-        return _move_or_copy(item.path, dest_dir / item.path.name, copy=False, dry_run=False)
+        # Corrupt archive — fall back to moving/copying it as-is
+        return _move_or_copy(item.path, dest_dir / item.path.name, copy=copy, dry_run=False)
     except ValueError as exc:
         # Unsafe zip member path — refuse to extract or move
         logger.error("Refusing to extract %s: %s", item.path, exc)
