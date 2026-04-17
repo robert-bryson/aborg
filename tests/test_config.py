@@ -89,9 +89,7 @@ class TestConfigLoad:
     def test_source_dirs_deduplicated_at_load(self, tmp_path):
         """Duplicate source_dirs should be removed when loading config."""
         cfg_file = tmp_path / "config.yaml"
-        cfg_file.write_text(
-            yaml.dump({"source_dirs": ["/a/b", "/c/d", "/a/b", "/c/d", "/a/b"]})
-        )
+        cfg_file.write_text(yaml.dump({"source_dirs": ["/a/b", "/c/d", "/a/b", "/c/d", "/a/b"]}))
         cfg = Config.load(cfg_file)
         assert len(cfg.source_dirs) == 2
         assert cfg.source_dirs == [Path("/a/b"), Path("/c/d")]
@@ -137,9 +135,7 @@ class TestConfigSave:
     def test_minimal_config_gets_defaults(self, tmp_path):
         """A config with just source_dirs and destination should still be functional."""
         cfg_file = tmp_path / "config.yaml"
-        cfg_file.write_text(
-            yaml.dump({"source_dirs": ["/src"], "destination": "/dest"})
-        )
+        cfg_file.write_text(yaml.dump({"source_dirs": ["/src"], "destination": "/dest"}))
         cfg = Config.load(cfg_file)
         assert cfg.audio_extensions  # has default audio extensions
         assert cfg.archive_extensions  # has default archive extensions

@@ -149,14 +149,14 @@ def _serialize(result: ScanResult) -> dict:
 
 
 def _deserialize(data: dict) -> ScanResult:
-    meta_d = data["meta"]
+    meta_d = {**data["meta"]}
     sp = meta_d.pop("source_path", None)
     meta = AudiobookMeta(**meta_d)
     meta.source_path = Path(sp) if sp else None
 
     tag_meta = None
     if "tag_meta" in data:
-        tm_d = data["tag_meta"]
+        tm_d = {**data["tag_meta"]}
         tm_sp = tm_d.pop("source_path", None)
         tag_meta = AudiobookMeta(**tm_d)
         tag_meta.source_path = Path(tm_sp) if tm_sp else None

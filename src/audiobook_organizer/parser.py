@@ -44,7 +44,9 @@ _NON_AUTHOR_WORDS = frozenset(
 )
 
 # Single words that are articles/determiners, never valid standalone author names.
-_ARTICLE_WORDS = frozenset({"the", "a", "an", "el", "la", "le", "les", "los", "las", "der", "die", "das", "il"})
+_ARTICLE_WORDS = frozenset(
+    {"the", "a", "an", "el", "la", "le", "les", "los", "las", "der", "die", "das", "il"}
+)
 
 # Regex matching copyright / production notices that appear in artist tags.
 _COPYRIGHT_RE = re.compile(
@@ -69,6 +71,7 @@ def _strip_author_noise(name: str) -> str:
     """Remove parenthetical qualifiers like (audio) from an author name."""
     cleaned = _AUTHOR_NOISE_PAREN_RE.sub("", name).strip()
     return cleaned or name
+
 
 # Trailing parenthetical noise to strip from titles (awards, format labels, etc.).
 _NOISE_PAREN_RE = re.compile(
@@ -598,11 +601,7 @@ def parse_audio_tags(path: Path) -> AudiobookMeta:
             continue
         if "/" in raw_candidate:
             parts = [p.strip() for p in raw_candidate.split("/") if p.strip()]
-            people = [
-                _strip_author_noise(p)
-                for p in parts
-                if not _is_copyright_notice(p)
-            ]
+            people = [_strip_author_noise(p) for p in parts if not _is_copyright_notice(p)]
         else:
             people = [_strip_author_noise(raw_candidate)]
         for person in people:
@@ -613,10 +612,7 @@ def parse_audio_tags(path: Path) -> AudiobookMeta:
             # Use remaining valid people as narrator fallback.
             if meta.narrator is None and len(people) > 1:
                 for person in people[1:]:
-                    if (
-                        person.lower() != meta.author.lower()
-                        and looks_like_author(person)
-                    ):
+                    if person.lower() != meta.author.lower() and looks_like_author(person):
                         meta.narrator = person
                         break
             break

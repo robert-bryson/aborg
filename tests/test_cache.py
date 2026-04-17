@@ -185,3 +185,83 @@ class TestScanCache:
         assert got.meta.year == "2024"
         assert got.meta.narrator == "Narrator"
         assert got.meta.source_path == audio
+
+
+class TestCacheEdgeCases:
+    def test_load_invalid_json(self, tmp_path):
+        cache_file = tmp_path / "cache.json"
+        cache_file.write_text("not json at all")
+        cache = ScanCache(cache_file)
+        assert cache.size == 0
+
+    def test_load_wrong_version(self, tmp_path):
+        import json
+
+        cache_file = tmp_path / "cache.json"
+        cache_file.write_text(json.dumps({"version": 999, "entries": {"a": {}}}))
+        cache = ScanCache(cache_file)
+        assert cache.size == 0
+
+    def test_get_returns_none_on_fingerprint_change(self, tmp_path):
+        cache_file = tmp_path / "cache.json"
+        audio = tmp_path / "file.mp3"
+        audio.write_bytes(b"\x00" * 100)
+
+        cache = ScanCache(cache_file)
+        cache.put(audio, _make_result(audio))
+        cache.save()
+
+        # Modify the file — fingerprint changes
+        audio.write_bytes(b"\xff" * 200)
+
+        cache2 = ScanCache(cache_file)
+        assert cache2.get(audio) is None
+
+    def test_put_skips_nonexistent_path(self, tmp_path):
+        cache = ScanCache(tmp_path / "cache.json")
+        result = _make_result(tmp_path / "nonexistent.mp3")
+        cache.put(tmp_path / "nonexistent.mp3", result)
+        assert cache.size == 0
+
+    def test_deserialize_preserves_data(self, tmp_path):
+        """Regression: _deserialize should not mutate the cached data dict."""
+        cache_file = tmp_path / "cache.json"
+        audio = tmp_path / "file.mp3"
+        audio.write_bytes(b"\x00" * 100)
+
+        cache = ScanCache(cache_file)
+        cache.put(audio, _make_result(audio))
+
+        # Get twice — second call should still work (no data corruption)
+        got1 = cache.get(audio)
+        got2 = cache.get(audio)
+        assert got1 is not None
+        assert got2 is not None
+        assert got1.meta.author == got2.meta.author
+
+    def test_tag_meta_round_trip(self, tmp_path):
+        cache_file = tmp_path / "cache.json"
+        audio = tmp_path / "file.mp3"
+        audio.write_bytes(b"\x00" * 100)
+
+        tag_meta = AudiobookMeta(author="Tag Author", title="Tag Title", source_path=audio)
+        result = ScanResult(
+            path=audio,
+            kind="audio_file",
+            meta=AudiobookMeta(author="Author", title="Title", source_path=audio),
+            size=100,
+            has_cover=False,
+            file_count=0,
+            tag_meta=tag_meta,
+        )
+
+        cache = ScanCache(cache_file)
+        cache.put(audio, result)
+        cache.save()
+
+        cache2 = ScanCache(cache_file)
+        got = cache2.get(audio)
+        assert got is not None
+        assert got.tag_meta is not None
+        assert got.tag_meta.author == "Tag Author"
+        assert got.tag_meta.source_path == audio

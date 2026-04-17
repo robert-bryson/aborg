@@ -243,8 +243,7 @@ class TestUndoMalformedLog:
         dest2 = _write(tmp_path / "dest" / "b.mp3")
         # Timestamps where one is a prefix of another
         log.write_text(
-            "2025-01-01T00:00:00\t{}\t{}\n"
-            "2025-01-01T00:00:00.123\t{}\t{}\n".format(src1, dest1, src2, dest2)
+            f"2025-01-01T00:00:00\t{src1}\t{dest1}\n2025-01-01T00:00:00.123\t{src2}\t{dest2}\n"
         )
         cfg = Config(move_log=log)
         undone = undo_last(cfg, dry_run=True)

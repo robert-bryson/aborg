@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -16,7 +15,13 @@ if TYPE_CHECKING:
 
 from .config import Config
 from .parser import flip_author_name, is_last_first, looks_like_author
-from .scanner import CollectionScan, ScanResult, fold_accents, scan_collection
+from .scanner import (
+    CollectionScan,
+    ScanResult,
+    fold_accents,
+    scan_collection,
+)
+
 
 @dataclass
 class FixAction:
@@ -204,9 +209,7 @@ def _check_author_variants(authors: set[str], report: AnalysisReport) -> None:
     author_list = sorted(authors)
     for i, a in enumerate(author_list):
         for b in author_list[i + 1 :]:
-            ratio = SequenceMatcher(
-                None, fold_accents(a.lower()), fold_accents(b.lower())
-            ).ratio()
+            ratio = SequenceMatcher(None, fold_accents(a.lower()), fold_accents(b.lower())).ratio()
             if 0.75 < ratio < 1.0:
                 report.author_variants.append((a, b))
                 report.issues.append(

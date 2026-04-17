@@ -62,6 +62,7 @@ def _normalize_dedup(s: str) -> str:
     """Normalize a string for deduplication (case + accent folding)."""
     return fold_accents(s.lower())
 
+
 # Cover-art filenames recognised by Audiobookshelf.
 COVER_NAMES = frozenset({"cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png"})
 
@@ -140,16 +141,12 @@ def scan_sources(
 
             if result:
                 result.source_dir = src_dir
-                dedup_key = _normalize_dedup(
-                    f"{result.meta.author}::{result.meta.title}"
-                )
+                dedup_key = _normalize_dedup(f"{result.meta.author}::{result.meta.title}")
                 if dedup_key in seen_titles:
                     _log(f"  [yellow]skip duplicate[/yellow] {entry.name}")
                     continue
                 seen_titles.add(dedup_key)
-                _log(
-                    f"  [green]✓[/green] {result.meta.author} — {result.meta.title}"
-                )
+                _log(f"  [green]✓[/green] {result.meta.author} — {result.meta.title}")
                 results.append(result)
                 _hit(result)
 
@@ -216,6 +213,7 @@ def _check_dir(path: Path, cfg: Config) -> ScanResult | None:
     all_exts = cfg.audio_extensions | cfg.companion_extensions
     audio_files: list[Path] = []
     total_size = 0
+    has_cover = False
 
     for child in path.rglob("*"):
         if child.is_file() and child.suffix.lower() in all_exts:
@@ -226,6 +224,8 @@ def _check_dir(path: Path, cfg: Config) -> ScanResult | None:
             if child.suffix.lower() in cfg.audio_extensions:
                 audio_files.append(child)
             total_size += size
+        if child.is_file() and child.name.lower() in COVER_NAMES:
+            has_cover = True
 
     if not audio_files:
         return None
@@ -251,6 +251,8 @@ def _check_dir(path: Path, cfg: Config) -> ScanResult | None:
         kind="audio_dir",
         meta=meta,
         size=total_size,
+        has_cover=has_cover,
+        file_count=len(audio_files),
         tag_meta=first_audio_meta if audio_files else None,
     )
 

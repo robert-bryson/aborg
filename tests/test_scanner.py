@@ -5,7 +5,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from audiobook_organizer.config import Config
-from audiobook_organizer.scanner import _normalize_dedup, fold_accents, scan_collection, scan_sources
+from audiobook_organizer.scanner import (
+    _normalize_dedup,
+    fold_accents,
+    scan_collection,
+    scan_sources,
+)
 
 from .conftest import make_cfg
 
@@ -515,3 +520,180 @@ class TestFoldAccents:
 
     def test_handles_empty_string(self):
         assert fold_accents("") == ""
+
+
+class TestCheckDir:
+    """Tests for _check_dir: scanning a directory for audiobook content."""
+
+    def test_sets_has_cover_and_file_count(self, tmp_path):
+        """Bug fix: _check_dir should populate has_cover and file_count."""
+        src = tmp_path / "downloads"
+        book = src / "Author - Title"
+        _make_audio_file(book / "track01.mp3")
+        _make_audio_file(book / "track02.mp3")
+        (book / "cover.jpg").write_bytes(b"\xff\xd8" + b"\x00" * 100)
+
+        cfg = make_cfg(source_dirs=[src])
+        results, _ = scan_sources(cfg)
+        assert len(results) == 1
+        assert results[0].has_cover is True
+        assert results[0].file_count == 2
+
+    def test_no_cover_sets_false(self, tmp_path):
+        src = tmp_path / "downloads"
+        book = src / "Author - Title"
+        _make_audio_file(book / "track01.mp3")
+
+        cfg = make_cfg(source_dirs=[src])
+        results, _ = scan_sources(cfg)
+        assert len(results) == 1
+        assert results[0].has_cover is False
+        assert results[0].file_count == 1
+
+
+class TestScanSourcesCallbacks:
+    """Tests for scan_sources callback and edge case behavior."""
+
+    def test_on_progress_called(self, tmp_path):
+        src = tmp_path / "downloads"
+        _make_audio_file(src / "Author - Title.mp3")
+
+        cfg = make_cfg(source_dirs=[src])
+        messages = []
+        scan_sources(cfg, on_progress=lambda msg: messages.append(msg))
+        assert any("Scanning" in m for m in messages)
+
+    def test_on_hit_called(self, tmp_path):
+        src = tmp_path / "downloads"
+        _make_audio_file(src / "Author - Title.mp3")
+
+        cfg = make_cfg(source_dirs=[src])
+        hits = []
+        scan_sources(cfg, on_hit=lambda r: hits.append(r))
+        assert len(hits) == 1
+
+    def test_deduplicates_resolved_paths(self, tmp_path):
+        src = tmp_path / "downloads"
+        _make_audio_file(src / "Author - Title.mp3")
+        # Create a symlink to the same dir
+        link = tmp_path / "link"
+        link.symlink_to(src)
+
+        cfg = make_cfg(source_dirs=[src, link])
+        results, _ = scan_sources(cfg)
+        assert len(results) == 1
+
+    def test_skips_files_below_min_size(self, tmp_path):
+        src = tmp_path / "downloads"
+        tiny = src / "Author - Title.mp3"
+        tiny.parent.mkdir(parents=True, exist_ok=True)
+        tiny.write_bytes(b"\x00" * 10)  # Below 100-byte min_file_size
+
+        cfg = make_cfg(source_dirs=[src])
+        results, _ = scan_sources(cfg)
+        assert len(results) == 0
+
+    def test_scan_with_cache(self, tmp_path):
+        from audiobook_organizer.cache import ScanCache
+
+        src = tmp_path / "downloads"
+        _make_audio_file(src / "Author - Title.mp3")
+
+        cache = ScanCache(tmp_path / "cache.json")
+        cfg = make_cfg(source_dirs=[src])
+
+        # First scan populates cache
+        results1, _ = scan_sources(cfg, cache=cache)
+        assert len(results1) == 1
+
+        # Second scan uses cache
+        results2, _ = scan_sources(cfg, cache=cache)
+        assert len(results2) == 1
+
+
+class TestScanCollectionEdgeCases:
+    """Tests for scan_collection edge cases."""
+
+    def test_nonexistent_root_returns_empty(self, tmp_path):
+        cfg = make_cfg()
+        result = scan_collection(tmp_path / "nonexistent", cfg)
+        assert result.items == []
+        assert result.empty_dirs == []
+        assert result.flat_audio_files == []
+
+    def test_hidden_dirs_skipped(self, tmp_path):
+        root = tmp_path / "collection"
+        hidden = root / ".hidden" / "Book"
+        _make_audio_file(hidden / "track.mp3")
+
+        cfg = make_cfg()
+        result = scan_collection(root, cfg)
+        assert len(result.items) == 0
+
+    def test_ignored_author_dirs_skipped(self, tmp_path):
+        root = tmp_path / "collection"
+        for name in ("_new", "_raw_inputs", "_downloads"):
+            _make_audio_file(root / name / "Book" / "track.mp3")
+
+        cfg = make_cfg()
+        result = scan_collection(root, cfg)
+        assert len(result.items) == 0
+
+    def test_flat_audio_files_detected(self, tmp_path):
+        root = tmp_path / "collection"
+        _make_audio_file(root / "loose_track.mp3")
+
+        cfg = make_cfg()
+        result = scan_collection(root, cfg)
+        assert len(result.flat_audio_files) == 1
+
+    def test_series_nested_items_found(self, tmp_path):
+        root = tmp_path / "collection"
+        author_dir = root / "Terry Goodkind"
+        series_dir = author_dir / "Sword of Truth"
+        _make_audio_file(series_dir / "Vol 1 - Wizards First Rule" / "track.mp3")
+
+        cfg = make_cfg()
+        from audiobook_organizer.parser import AudiobookMeta
+
+        with patch("audiobook_organizer.scanner.parse_audio_tags") as mock_tags:
+            mock_tags.return_value = AudiobookMeta(
+                author="Terry Goodkind",
+                title="Wizards First Rule",
+                series="Sword of Truth",
+                sequence="1",
+            )
+            result = scan_collection(root, cfg)
+        assert len(result.items) == 1
+
+    def test_empty_series_subdir_detected(self, tmp_path):
+        root = tmp_path / "collection"
+        author_dir = root / "Terry Goodkind"
+        series_dir = author_dir / "Sword of Truth"
+        empty_title = series_dir / "Empty Book"
+        empty_title.mkdir(parents=True)
+
+        cfg = make_cfg()
+        result = scan_collection(root, cfg)
+        assert empty_title in result.empty_dirs
+
+    def test_scan_collection_with_cache(self, tmp_path):
+        from audiobook_organizer.cache import ScanCache
+        from audiobook_organizer.parser import AudiobookMeta
+
+        root = tmp_path / "collection"
+        _make_audio_file(root / "Author" / "Book Title" / "track.mp3")
+
+        cache = ScanCache(tmp_path / "cache.json")
+        cfg = make_cfg()
+
+        with patch("audiobook_organizer.scanner.parse_audio_tags") as mock_tags:
+            mock_tags.return_value = AudiobookMeta(
+                author="Author",
+                title="Book Title",
+            )
+            result1 = scan_collection(root, cfg, cache=cache)
+            # Second scan should hit cache
+            result2 = scan_collection(root, cfg, cache=cache)
+
+        assert len(result1.items) == len(result2.items)

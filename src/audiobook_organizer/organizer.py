@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import zipfile
 from datetime import datetime, timezone
@@ -9,6 +10,8 @@ from pathlib import Path
 
 from .config import Config
 from .scanner import ScanResult
+
+logger = logging.getLogger(__name__)
 
 
 def organize(
@@ -48,9 +51,7 @@ def _handle_archive(item: ScanResult, dest_dir: Path, cfg: Config, *, dry_run: b
     """Extract a zip archive to the destination, or just move if extraction is off."""
     if item.path.suffix.lower() != ".zip":
         # Only .zip extraction is supported; .rar/.7z require external tools
-        import logging
-
-        logging.getLogger(__name__).info(
+        logger.info(
             "Cannot extract %s — only .zip extraction is supported; moving as-is",
             item.path.suffix,
         )

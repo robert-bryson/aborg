@@ -5,6 +5,8 @@ from pathlib import Path
 from audiobook_organizer.analyzer import (
     AnalysisReport,
     FixAction,
+    Issue,
+    _apply_remove_dir,
     _apply_rename,
     _check_metadata_quality,
     analyze_collection,
@@ -393,7 +395,7 @@ class TestApplyRename:
         assert "source no longer exists" in err
 
     def test_rename_no_target(self):
-        action = FixAction(kind="rename", source=Path("/tmp/x"), target=None)
+        action = FixAction(kind="rename", source=Path("/tmp/x"), target=None)  # noqa: S108
         ok, err = _apply_rename(action)
         assert ok is False
         assert "no target" in err
@@ -413,7 +415,68 @@ class TestApplyRename:
         src.mkdir()
         tgt = tmp_path / "new"
         action = FixAction(kind="rename", source=src, target=tgt)
-        ok, err = _apply_rename(action)
+        ok, _err = _apply_rename(action)
         assert ok is True
         assert tgt.exists()
         assert not src.exists()
+
+
+class TestAnalysisReportProperties:
+    def test_errors_property(self):
+        report = AnalysisReport()
+        report.issues = [
+            Issue(severity="error", category="test", message="err1"),
+            Issue(severity="warning", category="test", message="warn1"),
+            Issue(severity="error", category="test", message="err2"),
+        ]
+        assert len(report.errors) == 2
+        assert all(i.severity == "error" for i in report.errors)
+
+    def test_warnings_property(self):
+        report = AnalysisReport()
+        report.issues = [
+            Issue(severity="error", category="test", message="err1"),
+            Issue(severity="warning", category="test", message="warn1"),
+            Issue(severity="info", category="test", message="info1"),
+        ]
+        assert len(report.warnings) == 1
+        assert report.warnings[0].severity == "warning"
+
+
+class TestApplyFixesEdgeCases:
+    def test_apply_remove_dir_fails_nonempty(self, tmp_path):
+        d = tmp_path / "notempty"
+        d.mkdir()
+        (d / "file.txt").write_text("content")
+        action = FixAction(kind="remove_dir", source=d)
+        ok, err = _apply_remove_dir(action)
+        assert ok is False
+        assert err  # Some error message
+
+    def test_rename_source_missing(self, tmp_path):
+        action = FixAction(kind="rename", source=tmp_path / "gone", target=tmp_path / "new")
+        ok, err = _apply_rename(action)
+        assert ok is False
+        assert "source no longer exists" in err
+
+    def test_apply_fixes_with_callback(self, tmp_path):
+        d = tmp_path / "empty"
+        d.mkdir()
+        report = AnalysisReport()
+        report.issues = [
+            Issue(
+                severity="info",
+                category="cleanup",
+                message="Empty directory",
+                path=d,
+                fix=FixAction(kind="remove_dir", source=d),
+            )
+        ]
+        notifications = []
+        applied = apply_fixes(
+            report,
+            on_fix=lambda action, ok, err: notifications.append((action, ok, err)),
+        )
+        assert len(applied) == 1
+        assert len(notifications) == 1
+        assert notifications[0][1] is True  # ok=True

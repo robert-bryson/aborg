@@ -91,11 +91,7 @@ def _make_hit_callback(
             series = f"  [dim]({result.meta.series} #{seq})[/dim]"
         author = result.meta.author
         warn = ""
-        if (
-            author != "Unknown Author"
-            and " " not in author
-            and "," not in author
-        ):
+        if author != "Unknown Author" and " " not in author and "," not in author:
             warn = "  [yellow]\u26a0 single-name author[/yellow]"
         console.print(
             f"{tag} [dim]{counters.count:>3}.[/dim]"

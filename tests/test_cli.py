@@ -331,9 +331,7 @@ class TestOrgDestinationValidation:
         src = tmp_path / "downloads"
         src.mkdir()
         # Config with no destination
-        cfg_file.write_text(
-            f"source_dirs:\n  - {src}\nmove_log: {tmp_path / 'moves.log'}\n"
-        )
+        cfg_file.write_text(f"source_dirs:\n  - {src}\nmove_log: {tmp_path / 'moves.log'}\n")
         result = CliRunner().invoke(cli, ["-c", str(cfg_file), "org", "--dry-run"])
         assert result.exit_code != 0
         assert "No destination configured" in result.output
