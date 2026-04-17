@@ -49,11 +49,12 @@ from .scanner import ScanResult, scan_collection, scan_sources
 console = Console()
 
 
-def _human_size(size: int) -> str:
+def _human_size(n: int) -> str:
+    size = float(n)
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if abs(size) < 1024:
             return f"{size:.1f} {unit}"
-        size /= 1024  # type: ignore[assignment]
+        size /= 1024
     return f"{size:.1f} PB"
 
 

@@ -174,6 +174,27 @@ class TestUndo:
         cfg = Config(move_log=tmp_path / "nonexistent.log")
         assert undo_last(cfg) == []
 
+    def test_undo_when_dest_already_deleted(self, tmp_path):
+        """Undo should skip entries where dest no longer exists (already cleaned up)."""
+        src = _write(tmp_path / "src" / "book.mp3")
+        log = tmp_path / "moves.log"
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, move_log=log)
+        item = _scan_result(src)
+
+        organize([item], cfg)
+        assert not src.exists()
+
+        # Simulate destination being manually deleted before undo
+        actual_dest = next(iter(dest.rglob("*.mp3")))
+        actual_dest.unlink()
+
+        # Undo should not crash, but the file can't be restored
+        undone = undo_last(cfg)
+        assert len(undone) == 1
+        # src won't exist because dest was already deleted
+        assert not src.exists()
+
     def test_undo_dry_run(self, tmp_path):
         src = _write(tmp_path / "src" / "book.mp3")
         log = tmp_path / "moves.log"
@@ -475,3 +496,74 @@ class TestDirectoryDryRun:
         assert book_dir.exists()
         # Destination should NOT exist
         assert not dest.exists()
+
+
+class TestZipSlipSymlink:
+    def test_zip_with_symlink_entry_refused(self, tmp_path):
+        """Zip files containing symlink entries should be refused entirely."""
+        zip_path = tmp_path / "src" / "symlink.zip"
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            # Create a normal file
+            zf.writestr("audio.mp3", b"\x00" * 100)
+            # Create a symlink entry — external_attr >> 28 == 0xA
+            info = zipfile.ZipInfo("evil_link")
+            info.external_attr = 0xA0000000  # symlink
+            zf.writestr(info, "/etc/passwd")
+
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
+        item = _scan_result(zip_path, kind="archive")
+
+        actions = organize([item], cfg)
+        assert len(actions) == 0
+        assert zip_path.exists()  # original untouched
+
+    def test_zip_with_absolute_path_refused(self, tmp_path):
+        """Zip files with absolute member paths should be refused."""
+        zip_path = tmp_path / "src" / "abs.zip"
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("/etc/evil.txt", b"pwned")
+
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
+        item = _scan_result(zip_path, kind="archive")
+
+        actions = organize([item], cfg)
+        assert len(actions) == 0
+        assert not (Path("/etc/evil.txt")).exists()
+
+    def test_zip_with_dotdot_segments_refused(self, tmp_path):
+        """Zip members with '..' path segments should be refused."""
+        zip_path = tmp_path / "src" / "dotdot.zip"
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("subdir/../../escape.txt", b"pwned")
+
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
+        item = _scan_result(zip_path, kind="archive")
+
+        actions = organize([item], cfg)
+        assert len(actions) == 0
+
+
+class TestUndoLogTabsInPath:
+    def test_undo_handles_tab_in_dest_path(self, tmp_path):
+        """Log entries with tabs in destination path should parse correctly with maxsplit."""
+        log = tmp_path / "moves.log"
+        src = _write(tmp_path / "src" / "book.mp3")
+        # Create dest with tab in name
+        dest_dir = tmp_path / "dest" / "Author\tName"
+        dest_file = _write(dest_dir / "book.mp3")
+
+        # Write log entry where dest contains a tab
+        log.write_text(f"2025-01-01T00:00:00+00:00\t{src}\t{dest_file}\n")
+        cfg = Config(move_log=log)
+
+        # undo_last should parse correctly with maxsplit=2
+        undone = undo_last(cfg, dry_run=True)
+        assert len(undone) == 1
+        assert undone[0][0] == dest_file
+        assert undone[0][1] == src

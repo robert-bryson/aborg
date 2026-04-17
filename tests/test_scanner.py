@@ -237,6 +237,35 @@ class TestScanSources:
         for r in results:
             assert r.meta.author == "Gabriel García Márquez"
 
+    def test_accent_dedup_many_books_same_author(self, tmp_path):
+        """Retroactive author upgrade works correctly when many books exist.
+
+        This tests the O(k) reverse-index fix: only results for the affected
+        author key are updated, not the entire results list.
+        """
+        src = tmp_path / "downloads"
+        # 5 books by unaccented variant first
+        for i in range(5):
+            _make_audio_file(src / f"Gabriel Garcia Marquez - Book {i}.mp3")
+        # Then accented variant
+        _make_audio_file(src / "Gabriel García Márquez - Final Book.mp3")
+        # And a different author to make sure they're untouched
+        _make_audio_file(src / "Jane Austen - Pride and Prejudice.mp3")
+
+        cfg = make_cfg(source_dirs=[src])
+        results, _ = scan_sources(cfg)
+        assert len(results) == 7
+        marquez_results = [
+            r for r in results if "Marquez" in r.meta.author or "Márquez" in r.meta.author
+        ]
+        austen_results = [r for r in results if "Austen" in r.meta.author]
+        # All Marquez books should have the accented form
+        for r in marquez_results:
+            assert r.meta.author == "Gabriel García Márquez"
+        # Austen should be untouched
+        assert len(austen_results) == 1
+        assert austen_results[0].meta.author == "Jane Austen"
+
 
 class TestScanCollection:
     def test_scans_author_title_structure(self, tmp_path):

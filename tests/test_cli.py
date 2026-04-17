@@ -361,3 +361,12 @@ class TestHumanSize:
     def test_fractional(self):
         result = _human_size(1_500_000)
         assert "MB" in result
+
+    def test_petabytes(self):
+        result = _human_size(2 * 1024**5)
+        assert "PB" in result
+
+    def test_large_exact_boundary(self):
+        """Exactly 1 KB should not overflow to MB."""
+        assert _human_size(1024) == "1.0 KB"
+        assert _human_size(1023) == "1023.0 B"

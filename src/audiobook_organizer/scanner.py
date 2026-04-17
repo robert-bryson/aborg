@@ -108,6 +108,7 @@ def scan_sources(
     seen: set[Path] = set()
     seen_titles: set[str] = set()  # deduplicate Windows "(1)" copies
     seen_authors: dict[str, str] = {}  # normalized → canonical author name
+    author_results: dict[str, list[ScanResult]] = {}  # normalized → results with that author
     _log = on_progress or (lambda _msg: None)
     _hit = on_hit or (lambda _r: None)
 
@@ -155,9 +156,8 @@ def scan_sources(
                         # Upgrade: new form is more accented — update mapping
                         # and retroactively fix already-collected results.
                         seen_authors[author_key] = result.meta.author
-                        for prev in results:
-                            if _normalize_dedup(prev.meta.author) == author_key:
-                                prev.meta.author = result.meta.author
+                        for prev in author_results.get(author_key, []):
+                            prev.meta.author = result.meta.author
                     else:
                         result.meta.author = canonical
                 else:
@@ -170,6 +170,7 @@ def scan_sources(
                 seen_titles.add(dedup_key)
                 _log(f"  [green]✓[/green] {result.meta.author} — {result.meta.title}")
                 results.append(result)
+                author_results.setdefault(author_key, []).append(result)
                 _hit(result)
 
     return results, missing_dirs

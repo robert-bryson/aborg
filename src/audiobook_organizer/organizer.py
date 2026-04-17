@@ -72,10 +72,17 @@ def _handle_archive(
         with zipfile.ZipFile(item.path) as zf:
             # Security: validate all member paths to prevent zip-slip
             resolved_dest = dest_dir.resolve()
-            for member in zf.namelist():
+            for info in zf.infolist():
+                member = info.filename
+                # Reject absolute paths and directory traversal
+                if member.startswith(("/", "\\")) or ".." in member.split("/"):
+                    raise ValueError(f"Unsafe zip member path: {member}")
+                # Reject symlink entries (external_attr >> 28 == 0xA for symlinks)
+                if (info.external_attr >> 28) == 0xA:
+                    raise ValueError(f"Zip contains symlink entry: {member}")
                 member_path = (dest_dir / member).resolve()
                 if not member_path.is_relative_to(resolved_dest):
-                    raise ValueError(f"Unsafe zip member path: {member}")
+                    raise ValueError(f"Zip member escapes destination: {member}")
             zf.extractall(dest_dir)
     except zipfile.BadZipFile:
         # Corrupt archive — fall back to just moving it
@@ -176,7 +183,7 @@ def undo_last(cfg: Config, *, dry_run: bool = False) -> list[tuple[Path, Path]]:
 
     undone: list[tuple[Path, Path]] = []
     for line in batch:
-        parts = line.split("\t")
+        parts = line.split("\t", maxsplit=2)
         if len(parts) < 3:
             continue  # skip malformed log entries
         _, src_str, dest_str = parts[0], parts[1], parts[2]
