@@ -445,24 +445,24 @@ def org(
         return
 
     if not dry_run:
-        dest = cfg.destination
-        if not dest.exists():
+        dest_root = cfg.destination
+        if not dest_root.exists():
             console.print(
-                f"[red]Error:[/red] Destination does not exist: [bold]{dest}[/bold]\n"
+                f"[red]Error:[/red] Destination does not exist: [bold]{dest_root}[/bold]\n"
                 f"  Create it or check your config."
             )
             raise SystemExit(1)
         import tempfile
 
         try:
-            with tempfile.NamedTemporaryFile(dir=dest):
+            with tempfile.NamedTemporaryFile(dir=dest_root):
                 pass
         except OSError:
             console.print(
-                f"[red]Error:[/red] Destination is not writable: [bold]{dest}[/bold]\n"
+                f"[red]Error:[/red] Destination is not writable: [bold]{dest_root}[/bold]\n"
                 "  If this is a network mount, check that it is mounted"
                 " with read-write permissions.\n"
-                f"  Hint: [dim]mount | grep {dest.name}[/dim]"
+                f"  Hint: [dim]mount | grep {dest_root.name}[/dim]"
             )
             raise SystemExit(1)  # noqa: B904
 
@@ -473,6 +473,11 @@ def org(
     failed = 0
     moved_sources: list[Path] = []
     exist_sources: list[Path] = []
+    # All items organized in one CLI invocation share a timestamp so undo
+    # can treat them as a single batch.
+    from datetime import datetime, timezone
+
+    batch_ts = datetime.now(timezone.utc).isoformat()
     with console.status(f"[bold green]{verb}…[/bold green]", spinner="dots") as status:
         for i, item in enumerate(items, 1):
             dest_full = cfg.destination / item.meta.dest_relative(
@@ -483,7 +488,7 @@ def org(
                 exist_sources.append(item.path)
                 continue
             status.update(f"[bold green]{verb}:[/bold green] {item.meta.title}")
-            result = organize([item], cfg, dry_run=dry_run, copy=copy)
+            result = organize([item], cfg, dry_run=dry_run, copy=copy, batch_ts=batch_ts)
             if result:
                 done += len(result)
                 moved_sources.append(item.path)

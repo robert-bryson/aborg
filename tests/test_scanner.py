@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from audiobook_organizer.config import Config
+from audiobook_organizer.parser import AudiobookMeta
 from audiobook_organizer.scanner import (
     _normalize_dedup,
     fold_accents,
@@ -706,7 +707,6 @@ class TestScanCollectionEdgeCases:
 
     def test_scan_collection_with_cache(self, tmp_path):
         from audiobook_organizer.cache import ScanCache
-        from audiobook_organizer.parser import AudiobookMeta
 
         root = tmp_path / "collection"
         _make_audio_file(root / "Author" / "Book Title" / "track.mp3")

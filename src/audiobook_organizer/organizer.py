@@ -20,10 +20,13 @@ def organize(
     *,
     dry_run: bool = False,
     copy: bool = False,
+    batch_ts: str | None = None,
 ) -> list[tuple[Path, Path]]:
     """Organize a list of scan results into the destination directory.
 
     Returns a list of ``(source, destination)`` tuples for each action taken.
+    When called multiple times for the same user operation, pass a shared
+    *batch_ts* (ISO-format timestamp) so ``undo_last`` treats them as one batch.
     """
     actions: list[tuple[Path, Path]] = []
 
@@ -32,7 +35,7 @@ def organize(
         dest_dir = cfg.destination / dest_rel
 
         if item.kind == "archive" and cfg.auto_extract:
-            dest = _handle_archive(item, dest_dir, cfg, dry_run=dry_run)
+            dest = _handle_archive(item, dest_dir, cfg, dry_run=dry_run, copy=copy)
         elif item.kind == "audio_dir":
             dest = _handle_directory(item, dest_dir, dry_run=dry_run, copy=copy)
         else:
@@ -42,20 +45,23 @@ def organize(
             actions.append((item.path, dest))
 
     if not dry_run and actions:
-        _log_actions(actions, cfg.move_log)
+        _log_actions(actions, cfg.move_log, batch_ts=batch_ts)
 
     return actions
 
 
-def _handle_archive(item: ScanResult, dest_dir: Path, cfg: Config, *, dry_run: bool) -> Path | None:
+def _handle_archive(
+    item: ScanResult, dest_dir: Path, cfg: Config, *, dry_run: bool, copy: bool
+) -> Path | None:
     """Extract a zip archive to the destination, or just move if extraction is off."""
     if item.path.suffix.lower() != ".zip":
         # Only .zip extraction is supported; .rar/.7z require external tools
         logger.info(
-            "Cannot extract %s — only .zip extraction is supported; moving as-is",
+            "Cannot extract %s — only .zip extraction is supported; %s as-is",
             item.path.suffix,
+            "copying" if copy else "moving",
         )
-        return _handle_single_file(item, dest_dir, dry_run=dry_run, copy=False)
+        return _handle_single_file(item, dest_dir, dry_run=dry_run, copy=copy)
 
     if dry_run:
         return dest_dir
@@ -140,10 +146,12 @@ def _move_or_copy(src: Path, dest: Path, *, copy: bool, dry_run: bool) -> Path |
     return dest
 
 
-def _log_actions(actions: list[tuple[Path, Path]], log_path: Path) -> None:
+def _log_actions(
+    actions: list[tuple[Path, Path]], log_path: Path, *, batch_ts: str | None = None
+) -> None:
     """Append move/copy actions to the log for undo support."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).isoformat()
+    ts = batch_ts or datetime.now(timezone.utc).isoformat()
     with log_path.open("a") as f:
         for src, dest in actions:
             f.write(f"{ts}\t{src}\t{dest}\n")

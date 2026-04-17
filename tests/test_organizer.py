@@ -385,3 +385,93 @@ class TestArchiveDryRun:
         assert len(actions) == 1
         # Nothing should actually be extracted
         assert not dest.exists()
+
+
+class TestNonZipArchiveCopy:
+    def test_rar_copy_preserves_source(self, tmp_path):
+        """Non-zip archives should respect --copy and preserve the source file."""
+        rar_path = _write(tmp_path / "src" / "book.rar")
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
+        item = _scan_result(rar_path, kind="archive")
+
+        actions = organize([item], cfg, copy=True)
+        assert len(actions) == 1
+        # Source should still exist (copied, not moved)
+        assert rar_path.exists()
+        # Destination should also exist
+        assert actions[0][1].exists()
+
+    def test_7z_copy_preserves_source(self, tmp_path):
+        """7z archives should also respect --copy."""
+        sz_path = _write(tmp_path / "src" / "book.7z")
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
+        item = _scan_result(sz_path, kind="archive")
+
+        actions = organize([item], cfg, copy=True)
+        assert len(actions) == 1
+        assert sz_path.exists()  # source preserved
+
+
+class TestBatchTimestamp:
+    def test_batch_ts_groups_undo(self, tmp_path):
+        """Multiple organize calls with the same batch_ts should undo as one batch."""
+        dest = tmp_path / "dest"
+        log = tmp_path / "moves.log"
+        cfg = Config(destination=dest, move_log=log)
+
+        src1 = _write(tmp_path / "src1" / "book1.mp3")
+        src2 = _write(tmp_path / "src2" / "book2.mp3")
+        item1 = _scan_result(src1, title="Book One")
+        item2 = _scan_result(src2, title="Book Two")
+
+        batch_ts = "2025-01-01T00:00:00+00:00"
+        organize([item1], cfg, batch_ts=batch_ts)
+        organize([item2], cfg, batch_ts=batch_ts)
+
+        # Both items should be in the same undo batch
+        undone = undo_last(cfg)
+        assert len(undone) == 2
+        # After one undo call, both should be restored
+        assert src1.exists()
+        assert src2.exists()
+
+    def test_without_batch_ts_separate_undo(self, tmp_path):
+        """Without batch_ts, each organize call gets its own timestamp."""
+        dest = tmp_path / "dest"
+        log = tmp_path / "moves.log"
+        cfg = Config(destination=dest, move_log=log)
+
+        src1 = _write(tmp_path / "src1" / "book1.mp3")
+        src2 = _write(tmp_path / "src2" / "book2.mp3")
+        item1 = _scan_result(src1, title="Book One")
+        item2 = _scan_result(src2, title="Book Two")
+
+        # Organize separately without batch_ts — timestamps will differ
+        organize([item1], cfg)
+        import time
+
+        time.sleep(0.01)  # ensure different timestamps
+        organize([item2], cfg)
+
+        # First undo should only restore the last item
+        undone = undo_last(cfg)
+        assert len(undone) == 1
+
+
+class TestDirectoryDryRun:
+    def test_directory_dry_run(self, tmp_path):
+        """Dry run on directory organize should return dest but not move."""
+        book_dir = tmp_path / "src" / "Author - Book"
+        _write(book_dir / "track01.mp3")
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, move_log=tmp_path / "log")
+        item = _scan_result(book_dir, kind="audio_dir")
+
+        actions = organize([item], cfg, dry_run=True)
+        assert len(actions) == 1
+        # Source should still exist (dry run)
+        assert book_dir.exists()
+        # Destination should NOT exist
+        assert not dest.exists()

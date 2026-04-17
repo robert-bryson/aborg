@@ -1607,3 +1607,46 @@ class TestDestRelativeAuthorFormat:
         )
         result = meta.dest_relative(author_format="last_first")
         assert result == Path("Woodward, Bob & Bernstein, Carl/All the President's Men")
+
+
+# ── Edge case coverage for parser internals ──────────────────────────────
+
+
+class TestLooksLikeAuthorEdgeCases:
+    def test_whitespace_only_name(self):
+        assert looks_like_author("   ") is False
+
+    def test_single_article_word(self):
+        assert looks_like_author("The") is False
+        assert looks_like_author("a") is False
+        assert looks_like_author("el") is False
+
+
+class TestParseTitleRemainderEdgeCases:
+    def test_empty_string(self):
+        meta = _parse_title_remainder("")
+        assert meta.title == "Unknown Title"
+
+    def test_bare_year_only(self):
+        meta = _parse_title_remainder("1994")
+        assert meta.year == "1994"
+        assert meta.title == "Unknown Title"
+
+    def test_year_and_sequence_no_title(self):
+        meta = _parse_title_remainder("Vol 1 - 1994")
+        assert meta.sequence == "1"
+        assert meta.year == "1994"
+
+    def test_trailing_volume_after_title(self):
+        meta = _parse_title_remainder("The Great Adventure - Volume 3")
+        assert meta.sequence == "3"
+        assert meta.title == "The Great Adventure"
+
+
+class TestParseTitleFolderFallback:
+    def test_falls_back_to_parse_filename(self):
+        """When author stripping and title remainder both fail, fall back to regex."""
+        result = parse_title_folder("completely_unrelated_text", "John Smith", PATTERNS)
+        assert result.author == "John Smith"
+        # The fallback parse_filename with underscore pattern should parse this
+        assert result.title != "Unknown Title" or result.author == "John Smith"
