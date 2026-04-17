@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from audiobook_organizer.cli import _get_git_commit, _offer_source_cleanup, cli
+from audiobook_organizer.cli import _get_git_commit, _human_size, _offer_source_cleanup, cli
 from audiobook_organizer.config import Config
 
 
@@ -320,3 +320,46 @@ class TestRenameCommand:
         result = CliRunner().invoke(cli, ["fetch", "--help"])
         assert result.exit_code == 0
         assert "setup" in result.output
+
+
+class TestOrgDestinationValidation:
+    """Tests for the org command destination validation."""
+
+    def test_org_rejects_empty_destination(self, tmp_path):
+        """org should fail with a clear error when no destination is configured."""
+        cfg_file = tmp_path / "config.yaml"
+        src = tmp_path / "downloads"
+        src.mkdir()
+        # Config with no destination
+        cfg_file.write_text(
+            f"source_dirs:\n  - {src}\nmove_log: {tmp_path / 'moves.log'}\n"
+        )
+        result = CliRunner().invoke(cli, ["-c", str(cfg_file), "org", "--dry-run"])
+        assert result.exit_code != 0
+        assert "No destination configured" in result.output
+
+
+class TestHumanSize:
+    """Tests for the _human_size utility function."""
+
+    def test_bytes(self):
+        assert _human_size(500) == "500.0 B"
+
+    def test_kilobytes(self):
+        assert _human_size(1024) == "1.0 KB"
+
+    def test_megabytes(self):
+        assert _human_size(1_048_576) == "1.0 MB"
+
+    def test_gigabytes(self):
+        assert _human_size(1_073_741_824) == "1.0 GB"
+
+    def test_terabytes(self):
+        assert _human_size(1_099_511_627_776) == "1.0 TB"
+
+    def test_zero(self):
+        assert _human_size(0) == "0.0 B"
+
+    def test_fractional(self):
+        result = _human_size(1_500_000)
+        assert "MB" in result

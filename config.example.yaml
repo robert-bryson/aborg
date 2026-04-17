@@ -36,7 +36,7 @@ companion_extensions:
   - .txt
   - .opf
 
-# Auto-extract zip/archive files at destination
+# Auto-extract archives at destination (zip only; rar/7z are moved as-is)
 auto_extract: true
 
 # Delete archive after successful extraction

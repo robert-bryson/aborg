@@ -55,14 +55,9 @@ def _settings_dir(libby_settings: Path) -> Path:
 def check_odmpy() -> bool:
     """Return True if odmpy is available in the current Python environment."""
     try:
-        proc = subprocess.run(
-            [sys.executable, "-m", "odmpy", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        return proc.returncode == 0
-    except (OSError, subprocess.SubprocessError):
+        _odmpy_cmd()
+        return True
+    except FileNotFoundError:
         return False
 
 

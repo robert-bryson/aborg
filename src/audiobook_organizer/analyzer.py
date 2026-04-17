@@ -16,12 +16,7 @@ if TYPE_CHECKING:
 
 from .config import Config
 from .parser import flip_author_name, is_last_first, looks_like_author
-from .scanner import CollectionScan, ScanResult, scan_collection
-
-
-def _fold_accents(s: str) -> str:
-    """Fold accented characters to their ASCII equivalents."""
-    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+from .scanner import CollectionScan, ScanResult, fold_accents, scan_collection
 
 @dataclass
 class FixAction:
@@ -136,7 +131,7 @@ def analyze_collection(
     _log("Checking for empty directories…")
     _check_empty_dirs(collection, report)
     _log("Checking directory structure…")
-    _check_flat_files(collection, cfg, report)
+    _check_flat_files(collection, report)
     _log("Checking cover art…")
     _check_missing_covers(items, report)
     _log("Checking naming conventions…")
@@ -178,7 +173,7 @@ def _check_duplicates(items: list[ScanResult], report: AnalysisReport) -> None:
     """Detect possible duplicate audiobooks by fuzzy title matching."""
     by_author: defaultdict[str, list[ScanResult]] = defaultdict(list)
     for item in items:
-        by_author[_fold_accents(item.meta.author.lower())].append(item)
+        by_author[fold_accents(item.meta.author.lower())].append(item)
 
     for author_items in by_author.values():
         n = len(author_items)
@@ -188,8 +183,8 @@ def _check_duplicates(items: list[ScanResult], report: AnalysisReport) -> None:
                 b = author_items[j]
                 ratio = SequenceMatcher(
                     None,
-                    _fold_accents(a.meta.title.lower()),
-                    _fold_accents(b.meta.title.lower()),
+                    fold_accents(a.meta.title.lower()),
+                    fold_accents(b.meta.title.lower()),
                 ).ratio()
                 if ratio > 0.85:
                     report.duplicates.append((a, b))
@@ -210,7 +205,7 @@ def _check_author_variants(authors: set[str], report: AnalysisReport) -> None:
     for i, a in enumerate(author_list):
         for b in author_list[i + 1 :]:
             ratio = SequenceMatcher(
-                None, _fold_accents(a.lower()), _fold_accents(b.lower())
+                None, fold_accents(a.lower()), fold_accents(b.lower())
             ).ratio()
             if 0.75 < ratio < 1.0:
                 report.author_variants.append((a, b))
@@ -239,7 +234,7 @@ def _check_empty_dirs(collection: CollectionScan, report: AnalysisReport) -> Non
         )
 
 
-def _check_flat_files(collection: CollectionScan, cfg: Config, report: AnalysisReport) -> None:
+def _check_flat_files(collection: CollectionScan, report: AnalysisReport) -> None:
     """Flag audio files sitting directly in the root (not in Author/Title structure)."""
     for f in collection.flat_audio_files:
         report.issues.append(

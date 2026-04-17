@@ -4,13 +4,12 @@ import pytest
 
 from audiobook_organizer.config import Config
 
-# Standard extensions used across tests
-AUDIO_EXTS = frozenset({".m4b", ".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wma", ".aac"})
-ARCHIVE_EXTS = frozenset({".zip", ".rar", ".7z"})
-COMPANION_EXTS = frozenset(
-    {".jpg", ".jpeg", ".png", ".pdf", ".epub", ".nfo", ".cue", ".txt", ".opf"}
-)
-PATTERNS = list(Config.DEFAULT_PATTERNS)
+# Standard extensions used across tests — derive from Config.default() to stay DRY
+_DEFAULTS = Config.default()
+AUDIO_EXTS = _DEFAULTS.audio_extensions
+ARCHIVE_EXTS = _DEFAULTS.archive_extensions
+COMPANION_EXTS = _DEFAULTS.companion_extensions
+PATTERNS = list(_DEFAULTS.filename_patterns)
 
 
 def make_cfg(**overrides) -> Config:

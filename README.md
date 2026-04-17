@@ -12,7 +12,7 @@ A CLI tool to scan, organize, and manage audiobook file collections. Outputs an 
 - **Rename** — batch-rename existing folders to match Audiobookshelf naming conventions
 - **Undo** — revert the last organize operation via a move log
 - **Dry-run** — every destructive command supports `--dry-run`
-- **Auto-extract** — unzip archives at the destination (with zip-slip protection)
+- **Auto-extract** — unzip archives at the destination (with zip-slip protection; rar/7z moved as-is)
 - **Metadata** — reads ID3/audio tags via Mutagen and merges with filename parsing
 - **Cache** — speed up repeated scans with fingerprint-based caching (`--cache`)
 - **Configurable** — YAML config for source dirs, destination, patterns, and more
@@ -109,7 +109,7 @@ Key settings:
 |-----|---------|-------------|
 | `source_dirs` | *(none)* | Directories to scan for new audiobooks |
 | `destination` | *(none)* | Root of the organized collection |
-| `auto_extract` | `true` | Extract zip/rar/7z archives at destination |
+| `auto_extract` | `true` | Extract zip archives at destination (rar/7z are moved as-is) |
 | `delete_after_extract` | `false` | Remove archive after successful extraction |
 | `min_file_size` | `1 MB` | Ignore files smaller than this |
 | `filename_patterns` | 4 built-in | Regex patterns for parsing filenames (tried in order) |
@@ -145,9 +145,9 @@ The tool tries multiple regex patterns against filenames (configurable). Built-i
 
 Metadata is collected from three sources (highest priority first):
 
-1. **Audio tags** — ID3/Mutagen tags (artist, album, composer, series, narrator, etc.). Slash-separated contributor fields (e.g. `Author/Narrator/(c) Publisher`) are split and cleaned automatically — copyright notices, HTML entities, and noise qualifiers like "(audio)" are stripped.
-2. **Filename** — parsed against the configured regex patterns
-3. **Parent directory** — used as a fallback author name
+1. **Sidecar JSON** — `metadata/metadata.json` inside an audiobook directory or zip archive (creator roles: `aut`, `nrt`, `trl`)
+2. **Audio tags** — ID3/Mutagen tags (artist, album, composer, series, narrator, etc.). Slash-separated contributor fields (e.g. `Author/Narrator/(c) Publisher`) are split and cleaned automatically — copyright notices, HTML entities, and noise qualifiers like "(audio)" are stripped.
+3. **Filename** — parsed against the configured regex patterns
 
 ## Commands
 

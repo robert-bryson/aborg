@@ -87,6 +87,21 @@ class TestOrganize:
         extracted_dir = actions[0][1]
         assert extracted_dir.exists()
 
+    def test_non_zip_archive_moved_not_extracted(self, tmp_path):
+        """Non-zip archives (.rar, .7z) should be moved, not extracted."""
+        rar_path = _write(tmp_path / "src" / "book.rar")
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
+        item = _scan_result(rar_path, kind="archive")
+
+        actions = organize([item], cfg)
+        assert len(actions) == 1
+        # File should have been moved (not extracted)
+        actual_dest = actions[0][1]
+        assert actual_dest.exists()
+        assert actual_dest.name.startswith("book")
+        assert actual_dest.suffix == ".rar"
+
     def test_zip_slip_protection(self, tmp_path):
         """Ensure zip-slip attacks are blocked."""
         zip_path = tmp_path / "src" / "malicious.zip"
@@ -218,6 +233,24 @@ class TestUndoMalformedLog:
         log.write_text("\n\n")
         cfg = Config(move_log=log)
         assert undo_last(cfg) == []
+
+    def test_undo_batch_uses_exact_timestamp_match(self, tmp_path):
+        """Batch detection should match exact timestamps, not prefixes."""
+        log = tmp_path / "moves.log"
+        src1 = _write(tmp_path / "src" / "a.mp3")
+        src2 = _write(tmp_path / "src" / "b.mp3")
+        dest1 = _write(tmp_path / "dest" / "a.mp3")
+        dest2 = _write(tmp_path / "dest" / "b.mp3")
+        # Timestamps where one is a prefix of another
+        log.write_text(
+            "2025-01-01T00:00:00\t{}\t{}\n"
+            "2025-01-01T00:00:00.123\t{}\t{}\n".format(src1, dest1, src2, dest2)
+        )
+        cfg = Config(move_log=log)
+        undone = undo_last(cfg, dry_run=True)
+        # Only the last batch (the .123 timestamp) should be undone
+        assert len(undone) == 1
+        assert undone[0] == (dest2, src2)
 
 
 class TestExtractWithDelete:

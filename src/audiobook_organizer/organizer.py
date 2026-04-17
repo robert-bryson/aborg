@@ -47,7 +47,13 @@ def organize(
 def _handle_archive(item: ScanResult, dest_dir: Path, cfg: Config, *, dry_run: bool) -> Path | None:
     """Extract a zip archive to the destination, or just move if extraction is off."""
     if item.path.suffix.lower() != ".zip":
-        # For .rar / .7z we just move the file — extraction would need p7zip / unrar
+        # Only .zip extraction is supported; .rar/.7z require external tools
+        import logging
+
+        logging.getLogger(__name__).info(
+            "Cannot extract %s — only .zip extraction is supported; moving as-is",
+            item.path.suffix,
+        )
         return _handle_single_file(item, dest_dir, dry_run=dry_run, copy=False)
 
     if dry_run:
@@ -142,8 +148,8 @@ def undo_last(cfg: Config, *, dry_run: bool = False) -> list[tuple[Path, Path]]:
 
     # Find the last batch (all lines sharing the same timestamp)
     last_ts = lines[-1].split("\t")[0]
-    batch = [line for line in lines if line.startswith(last_ts)]
-    remaining = [line for line in lines if not line.startswith(last_ts)]
+    batch = [line for line in lines if line.split("\t", 1)[0] == last_ts]
+    remaining = [line for line in lines if line.split("\t", 1)[0] != last_ts]
 
     undone: list[tuple[Path, Path]] = []
     for line in batch:

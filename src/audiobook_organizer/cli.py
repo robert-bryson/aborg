@@ -367,6 +367,13 @@ def org(
     if dest:
         cfg.destination = Path(dest)
 
+    if not cfg.destination or cfg.destination == Path():
+        console.print(
+            "[red]Error:[/red] No destination configured.\n"
+            "  Set 'destination' in your config file or pass --dest."
+        )
+        raise SystemExit(1)
+
     scan_cache = ScanCache() if cache else None
 
     console.print(f"[dim]Scanning: {', '.join(str(d) for d in cfg.source_dirs)}[/dim]")
@@ -1193,7 +1200,7 @@ def rename(ctx: click.Context, path: str | None, dry_run: bool, yes: bool, cache
         f"[bold green]Scanning collection at {root} …[/bold green]",
         spinner="dots",
     ):
-        collection = scan_collection(root, cfg, cache=scan_cache)
+        collection = scan_collection(root, cfg, read_tags=False, cache=scan_cache)
         items = collection.items
 
     if scan_cache:

@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from audiobook_organizer.config import Config
-from audiobook_organizer.scanner import _normalize_dedup, scan_collection, scan_sources
+from audiobook_organizer.scanner import _normalize_dedup, fold_accents, scan_collection, scan_sources
 
 from .conftest import make_cfg
 
@@ -129,6 +129,25 @@ class TestScanSources:
         src = tmp_path / "downloads"
         book_dir = src / "French I"
         _make_audio_file(book_dir / "lesson01.mp3")
+
+        cfg = make_cfg(source_dirs=[src])
+        results, _ = scan_sources(cfg)
+        assert len(results) == 0
+
+    def test_skips_article_word_author(self, tmp_path):
+        """Folders like 'The - Hobbit' where 'The' is parsed as author should be skipped."""
+        src = tmp_path / "downloads"
+        book_dir = src / "The - Hobbit"
+        _make_audio_file(book_dir / "track01.mp3")
+
+        cfg = make_cfg(source_dirs=[src])
+        results, _ = scan_sources(cfg)
+        assert len(results) == 0
+
+    def test_skips_article_word_author_file(self, tmp_path):
+        """Files like 'The - Title.mp3' where 'The' is parsed as author should be skipped."""
+        src = tmp_path / "downloads"
+        _make_audio_file(src / "A - Something.mp3")
 
         cfg = make_cfg(source_dirs=[src])
         results, _ = scan_sources(cfg)
@@ -479,3 +498,20 @@ class TestNormalizeDedup:
 
     def test_preserves_distinctness(self):
         assert _normalize_dedup("Author A") != _normalize_dedup("Author B")
+
+
+class TestFoldAccents:
+    """Tests for the shared fold_accents utility."""
+
+    def test_folds_accented_chars(self):
+        assert fold_accents("García Márquez") == "Garcia Marquez"
+
+    def test_preserves_ascii(self):
+        assert fold_accents("plain text") == "plain text"
+
+    def test_preserves_case(self):
+        """fold_accents should not lowercase — that's _normalize_dedup's job."""
+        assert fold_accents("García") == "Garcia"
+
+    def test_handles_empty_string(self):
+        assert fold_accents("") == ""

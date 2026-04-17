@@ -22,6 +22,7 @@ import re
 from .config import Config
 from .parser import (
     AudiobookMeta,
+    looks_like_author,
     merge_meta,
     parse_audio_tags,
     parse_filename,
@@ -52,9 +53,14 @@ _JUNK_PREFIXES = (
 _DUP_SUFFIX_RE = re.compile(r"\s*\(\d+\)$")
 
 
+def fold_accents(s: str) -> str:
+    """Fold accented characters to their ASCII equivalents."""
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+
+
 def _normalize_dedup(s: str) -> str:
     """Normalize a string for deduplication (case + accent folding)."""
-    return unicodedata.normalize("NFKD", s.lower()).encode("ascii", "ignore").decode()
+    return fold_accents(s.lower())
 
 # Cover-art filenames recognised by Audiobookshelf.
 COVER_NAMES = frozenset({"cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png"})
@@ -186,7 +192,7 @@ def _check_file(path: Path, cfg: Config) -> ScanResult | None:
         # For zips, try metadata.json inside the archive as a fallback.
         zip_meta = parse_metadata_json_from_zip(path) if ext == ".zip" else None
         meta = merge_meta(zip_meta, file_meta) if zip_meta else file_meta
-        if meta.author == "Unknown Author":
+        if meta.author == "Unknown Author" or not looks_like_author(meta.author):
             return None
         meta.source_path = path
         return ScanResult(path=path, kind="archive", meta=meta, size=size)
@@ -195,7 +201,9 @@ def _check_file(path: Path, cfg: Config) -> ScanResult | None:
         file_meta = parse_filename(path.stem, cfg.filename_patterns)
         tag_meta = parse_audio_tags(path)
         meta = merge_meta(tag_meta, file_meta)
-        if meta.author != "Unknown Author" and meta.title != "Unknown Title":
+        if meta.author == "Unknown Author" or not looks_like_author(meta.author):
+            return None
+        if meta.title != "Unknown Title":
             meta.title = strip_author_from_title(meta.title, meta.author)
         meta.source_path = path
         return ScanResult(path=path, kind="audio_file", meta=meta, size=size, tag_meta=tag_meta)
@@ -231,7 +239,7 @@ def _check_dir(path: Path, cfg: Config) -> ScanResult | None:
     else:
         meta = merge_meta(first_audio_meta, dir_meta)
     # Skip directories where we can't identify an author (likely not an audiobook)
-    if meta.author == "Unknown Author":
+    if meta.author == "Unknown Author" or not looks_like_author(meta.author):
         return None
     # Strip author name from title if it leaked through from tags or name.
     if meta.title != "Unknown Title":
