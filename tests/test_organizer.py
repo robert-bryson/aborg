@@ -330,3 +330,58 @@ class TestDirectoryMerge:
         assert (dest_dir / "new_track.mp3").exists()
         # Source should be removed
         assert not src2.exists()
+
+
+class TestSymlinkProtection:
+    def test_symlink_source_dir_refused(self, tmp_path):
+        """A symlink source directory should be refused to prevent data loss."""
+        real_dir = tmp_path / "real_audiobook"
+        _write(real_dir / "track.mp3")
+        link_dir = tmp_path / "link_audiobook"
+        link_dir.symlink_to(real_dir)
+
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, move_log=tmp_path / "log")
+        item = _scan_result(link_dir, kind="audio_dir")
+
+        actions = organize([item], cfg)
+        # Symlink source is refused — no action taken
+        assert len(actions) == 0
+        # Original data is untouched
+        assert real_dir.exists()
+        assert (real_dir / "track.mp3").exists()
+
+    def test_copy_dir_preserves_internal_symlinks(self, tmp_path):
+        """Internal symlinks should be copied as symlinks (symlinks=True)."""
+        book_dir = tmp_path / "src" / "Author - Book"
+        _write(book_dir / "track.mp3")
+        # Create a symlink inside the audiobook dir
+        (book_dir / "link.mp3").symlink_to(book_dir / "track.mp3")
+
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, move_log=tmp_path / "log")
+        item = _scan_result(book_dir, kind="audio_dir")
+
+        actions = organize([item], cfg, copy=True)
+        assert len(actions) == 1
+        dest_dir = actions[0][1]
+        # The internal symlink should be preserved as a symlink, not dereferenced
+        assert (dest_dir / "link.mp3").is_symlink()
+
+
+class TestArchiveDryRun:
+    def test_archive_extract_dry_run(self, tmp_path):
+        """Dry run on archive extraction should return dest but not extract."""
+        zip_path = tmp_path / "src" / "book.zip"
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("audio.mp3", b"\x00" * 100)
+
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
+        item = _scan_result(zip_path, kind="archive")
+
+        actions = organize([item], cfg, dry_run=True)
+        assert len(actions) == 1
+        # Nothing should actually be extracted
+        assert not dest.exists()

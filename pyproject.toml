@@ -47,6 +47,7 @@ packages = ["src/audiobook_organizer"]
 
 [dependency-groups]
 dev = [
+    "pre-commit>=4.5.1",
     "pytest>=9.0.3,<10",
     "pytest-cov>=6.0,<8",
     "ruff>=0.9",

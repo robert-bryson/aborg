@@ -97,14 +97,20 @@ def _handle_directory(
     When the destination already exists the contents are merged.  For moves
     this is implemented as copy-then-delete because there is no atomic
     "move with merge" operation.
+
+    Symlinks inside the source tree are **not** followed — this prevents
+    accidental data loss when a symlink points outside the audiobook dir.
     """
     if dry_run:
         return dest_dir
+    if item.path.is_symlink():
+        logger.warning("Refusing to move/copy symlink source: %s", item.path)
+        return None
     dest_dir.parent.mkdir(parents=True, exist_ok=True)
     if copy:
-        shutil.copytree(item.path, dest_dir, dirs_exist_ok=True)
+        shutil.copytree(item.path, dest_dir, dirs_exist_ok=True, symlinks=True)
     elif dest_dir.exists():
-        shutil.copytree(item.path, dest_dir, dirs_exist_ok=True)
+        shutil.copytree(item.path, dest_dir, dirs_exist_ok=True, symlinks=True)
         shutil.rmtree(item.path)
     else:
         shutil.move(item.path, dest_dir)

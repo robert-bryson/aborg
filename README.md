@@ -342,6 +342,28 @@ Show common commands and quick-start examples grouped by task.
 aborg tldr
 ```
 
+## Development
+
+```bash
+# Install dev dependencies
+uv sync
+
+# Run tests with coverage
+uv run pytest --cov=audiobook_organizer --cov-report=term-missing
+
+# Lint and format
+uv run ruff check src tests
+uv run ruff format src tests
+```
+
+### Pre-commit hooks
+
+The repo uses [pre-commit](https://pre-commit.com/) to run Ruff lint and format checks before each commit:
+
+```bash
+uv run pre-commit install
+```
+
 ## License
 
 MIT

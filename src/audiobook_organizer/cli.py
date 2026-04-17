@@ -32,6 +32,8 @@ from .fetcher import (
 from .organizer import organize, undo_last
 from .parser import (
     AudiobookMeta,
+    flip_author_name,
+    is_last_first,
     looks_like_author,
     merge_meta,
     normalize_path_name,
@@ -106,11 +108,9 @@ def _make_hit_callback(
 
         # Track full-name authors by surname for single-name matching.
         if " " in author or "," in author:
-            # Extract surname: last word for "First Last", first part for "Last, First"
-            if "," in author:
-                surname = author.split(",", 1)[0].strip().lower()
-            else:
-                surname = author.rsplit(None, 1)[-1].lower()
+            # Normalise to "Last, First" then take the surname.
+            normalised = author if is_last_first(author) else flip_author_name(author)
+            surname = normalised.split(",", 1)[0].strip().lower()
             known_authors[surname] = author
 
         # Near-duplicate title detection (fuzzy match within same author).
@@ -570,6 +570,9 @@ def _offer_source_cleanup(
     removed = 0
     for p in cleanup_paths:
         try:
+            if p.is_symlink():
+                console.print(f"  [yellow]skip symlink:[/yellow] {p}")
+                continue
             if p.is_dir():
                 shutil.rmtree(p)
             elif p.is_file():

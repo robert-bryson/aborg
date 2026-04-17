@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 from audiobook_organizer.config import Config
 from audiobook_organizer.parser import (
-    AudiobookMeta,
     _MAX_FOLDER_NAME,
+    AudiobookMeta,
     _clean_tag_title,
     _extract_narrator,
     _is_copyright_notice,
@@ -180,7 +180,7 @@ class TestAudiobookMeta:
         assert '"' not in name
         assert "<" not in name
         assert ":" not in name
-        assert "Bad - Title here" == name
+        assert name == "Bad - Title here"
 
     def test_dest_folder_name_truncates_long_title(self):
         long_title = "A" * 200

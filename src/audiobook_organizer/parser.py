@@ -153,7 +153,8 @@ _MAX_FOLDER_NAME = 180
 
 def _sanitize(name: str) -> str:
     """Remove or replace filesystem-unsafe characters."""
-    # Replace colons with dashes to preserve readability (e.g. "Fascism: A Warning" → "Fascism - A Warning")
+    # Replace colons with dashes for readability
+    # e.g. "Fascism: A Warning" → "Fascism - A Warning"
     name = re.sub(r":\s*", " - ", name)
     # Remove other characters illegal on Windows/Linux
     name = re.sub(r'[<>"/\\|?*]', "", name)
