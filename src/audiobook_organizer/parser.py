@@ -197,12 +197,26 @@ def _is_multi_author(name: str) -> bool:
     Distinguishes ``"First Last, First Last"`` (multi-author) from
     ``"Last, First"`` (single inverted name) by checking whether the
     segment before the first comma contains a space.
+
+    Handles compound last names like ``"Garcia Marquez, Gabriel"`` by
+    checking whether the part *after* the comma is a single word — if so,
+    it's more likely ``"CompoundLast, First"`` than two separate authors.
     """
     if " & " in name:
         return True
     if "," in name:
-        first_part = name.split(",", 1)[0].strip()
-        return " " in first_part
+        parts = name.split(",")
+        first_part = parts[0].strip()
+        if " " not in first_part:
+            return False
+        # Exactly one comma: check if the after-comma portion is a single
+        # word ("Garcia Marquez, Gabriel") vs a full name with space
+        # ("John Smith, Jane Doe").
+        if len(parts) == 2:
+            after = parts[1].strip()
+            if " " not in after:
+                return False
+        return True
     return False
 
 
@@ -589,6 +603,40 @@ def _read_translator(path: Path) -> str | None:
     return None
 
 
+def _normalize_to_first_last(name: str) -> str:
+    """Normalize a single author name to 'first last' lowercase form."""
+    name = name.strip()
+    if is_last_first(name):
+        name = flip_author_name(name)
+    return name.lower()
+
+
+def _dedup_author_names(people: list[str]) -> list[str]:
+    """Deduplicate a list of author names, handling multi-author values.
+
+    Handles cases like ``["Noam Chomsky, Noam Chomsky & Noam Chomsky"]``
+    by splitting on ``" & "`` and ``", "`` delimiters and deduplicating.
+    """
+    expanded: list[str] = []
+    for p in people:
+        # Split compound values: first by " & ", then by "," for remaining parts.
+        chunks = [c.strip() for c in p.split(" & ") if c.strip()] if " & " in p else [p]
+        for chunk in chunks:
+            if _is_multi_author(chunk):
+                expanded.extend(a.strip() for a in chunk.split(",") if a.strip())
+            else:
+                expanded.append(chunk)
+    # Deduplicate by lowercased name, preserving first occurrence order.
+    seen: dict[str, str] = {}
+    result: list[str] = []
+    for name in expanded:
+        key = name.strip().lower()
+        if key and key not in seen:
+            seen[key] = name
+            result.append(name)
+    return result
+
+
 def parse_audio_tags(path: Path) -> AudiobookMeta:
     """Read ID3/audio metadata from an audio file using Mutagen.
 
@@ -622,6 +670,8 @@ def parse_audio_tags(path: Path) -> AudiobookMeta:
             people = [_strip_author_noise(p) for p in parts if not _is_copyright_notice(p)]
         else:
             people = [_strip_author_noise(raw_candidate)]
+        # Deduplicate repeated names (e.g. "Noam Chomsky, Noam Chomsky & Noam Chomsky")
+        people = _dedup_author_names(people)
         for person in people:
             if looks_like_author(person):
                 meta.author = person
@@ -642,6 +692,14 @@ def parse_audio_tags(path: Path) -> AudiobookMeta:
     meta.narrator = _get("composer") or meta.narrator
     meta.series = _get("series", "mvnm", "grouping") or meta.series
     meta.sequence = _get("series-part", "mvin") or meta.sequence
+
+    # Clear narrator when it duplicates the author (common in poorly tagged files).
+    if (
+        meta.narrator
+        and meta.author != "Unknown Author"
+        and _normalize_to_first_last(meta.narrator) == _normalize_to_first_last(meta.author)
+    ):
+        meta.narrator = None
 
     # Try to read translator from non-easy-mode tags.
     meta.translator = _read_translator(path) or meta.translator

@@ -477,9 +477,9 @@ def org(
                 exist_sources.append(item.path)
                 continue
             status.update(f"[bold green]{verb}:[/bold green] {item.meta.title}")
-            result = organize([item], cfg, dry_run=dry_run, copy=copy, batch_ts=batch_ts)
-            if result:
-                done += len(result)
+            actions = organize([item], cfg, dry_run=dry_run, copy=copy, batch_ts=batch_ts)
+            if actions:
+                done += len(actions)
                 moved_sources.append(item.path)
                 console.print(
                     f"  [green]✓[/green] [dim]{i}.[/dim] {item.meta.author} — {item.meta.title}"

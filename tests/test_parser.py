@@ -10,6 +10,7 @@ from audiobook_organizer.parser import (
     _MAX_FOLDER_NAME,
     AudiobookMeta,
     _clean_tag_title,
+    _dedup_author_names,
     _extract_narrator,
     _is_copyright_notice,
     _parse_title_remainder,
@@ -1535,8 +1536,20 @@ class TestAuthorFormatHelpers:
         # Ampersand-separated also not "Last, First"
         assert is_last_first("Woodward, Bob & Bernstein, Carl") is False
 
+    def test_is_last_first_compound_surname(self):
+        # Compound last names like "Garcia Marquez, Gabriel" should be
+        # recognised as "Last, First" not multi-author.
+        assert is_last_first("Garcia Marquez, Gabriel") is True
+        assert is_last_first("García Márquez, Gabriel") is True
+        assert is_last_first("De la Cruz, Melissa") is True
+        assert is_last_first("Van der Berg, Jan") is True
+
     def test_flip_last_first(self):
         assert flip_author_name("Applebaum, Anne") == "Anne Applebaum"
+
+    def test_flip_compound_surname(self):
+        assert flip_author_name("Garcia Marquez, Gabriel") == "Gabriel Garcia Marquez"
+        assert flip_author_name("García Márquez, Gabriel") == "Gabriel García Márquez"
 
     def test_flip_first_last(self):
         assert flip_author_name("Candice Millard") == "Millard, Candice"
@@ -1650,3 +1663,33 @@ class TestParseTitleFolderFallback:
         assert result.author == "John Smith"
         # The fallback parse_filename with underscore pattern should parse this
         assert result.title != "Unknown Title" or result.author == "John Smith"
+
+
+# ── _dedup_author_names ─────────────────────────────────────────────────
+
+
+class TestDedupAuthorNames:
+    def test_dedup_repeated_names(self):
+        result = _dedup_author_names(["Noam Chomsky, Noam Chomsky & Noam Chomsky"])
+        assert result == ["Noam Chomsky"]
+
+    def test_dedup_preserves_distinct_names(self):
+        result = _dedup_author_names(["Bob Woodward, Carl Bernstein"])
+        assert result == ["Bob Woodward", "Carl Bernstein"]
+
+    def test_dedup_slash_separated(self):
+        result = _dedup_author_names(["Stephen King", "Stephen King"])
+        assert result == ["Stephen King"]
+
+    def test_dedup_case_insensitive(self):
+        result = _dedup_author_names(["noam chomsky", "Noam Chomsky"])
+        # First occurrence wins
+        assert result == ["noam chomsky"]
+
+    def test_dedup_no_change_for_single(self):
+        result = _dedup_author_names(["Stephen King"])
+        assert result == ["Stephen King"]
+
+    def test_dedup_empty(self):
+        result = _dedup_author_names([])
+        assert result == []
