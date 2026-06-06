@@ -11,7 +11,6 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from difflib import SequenceMatcher
 from pathlib import Path
 
 import click
@@ -19,7 +18,13 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__
-from .analyzer import AnalysisReport, FixAction, analyze_collection, apply_fixes
+from .analyzer import (
+    AnalysisReport,
+    FixAction,
+    analyze_collection,
+    apply_fixes,
+    are_probable_duplicates,
+)
 from .cache import ScanCache
 from .config import DEFAULT_CONFIG_PATH, Config
 from .fetcher import (
@@ -79,9 +84,9 @@ def _make_hit_callback(
 ) -> Callable[[ScanResult], None]:
     """Build a scan-hit callback that prints each discovered book."""
     author_fmt = cfg.author_name_format
-    # Track authors for single-name matching and titles per author for fuzzy dedup warnings.
+    # Track authors for single-name matching and books per author for duplicate warnings.
     known_authors: dict[str, str] = {}  # normalized surname → full name
-    titles_by_author: dict[str, list[str]] = {}  # normalized author → list of titles
+    books_by_author: dict[str, list[AudiobookMeta]] = {}
 
     def _on_hit(result: ScanResult) -> None:
         counters.count += 1
@@ -126,15 +131,15 @@ def _make_hit_callback(
 
         # Near-duplicate title detection (fuzzy match within same author).
         author_key = fold_accents(author.lower())
-        title_lower = result.meta.title.lower()
-        near_dupes: list[str] = []
-        for prev_title in titles_by_author.get(author_key, []):
-            if SequenceMatcher(None, title_lower, prev_title.lower()).ratio() > 0.85:
-                near_dupes.append(prev_title)
+        near_dupes = [
+            previous.title
+            for previous in books_by_author.get(author_key, [])
+            if are_probable_duplicates(result.meta, previous)
+        ]
         if near_dupes:
             dup_warn = f"  [yellow]\u26a0 possible duplicate of: {near_dupes[0]}[/yellow]"
             warn = f"{warn}{dup_warn}" if warn else dup_warn
-        titles_by_author.setdefault(author_key, []).append(result.meta.title)
+        books_by_author.setdefault(author_key, []).append(result.meta)
 
         console.print(
             f"{tag} [dim]{counters.count:>3}.[/dim]"

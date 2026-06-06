@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 from .config import Config
 from .parser import (
+    AudiobookMeta,
     _normalize_to_first_last,
     flip_author_name,
     is_last_first,
@@ -26,6 +27,31 @@ from .scanner import (
     fold_accents,
     scan_collection,
 )
+
+_PART_NUMBER_RE = re.compile(
+    r"\b(?:part|book|vol(?:ume)?|disc|disk|cd)\s*0*(\d+(?:\.\d+)?)\b",
+    re.IGNORECASE,
+)
+
+
+def are_probable_duplicates(left: AudiobookMeta, right: AudiobookMeta) -> bool:
+    """Return whether two books are similar enough to warrant a duplicate warning."""
+    if left.year and right.year and left.year != right.year:
+        return False
+    if left.sequence and right.sequence and left.sequence != right.sequence:
+        return False
+
+    left_part = _PART_NUMBER_RE.search(left.title)
+    right_part = _PART_NUMBER_RE.search(right.title)
+    if left_part and right_part and left_part.group(1) != right_part.group(1):
+        return False
+
+    ratio = SequenceMatcher(
+        None,
+        fold_accents(left.title.lower()),
+        fold_accents(right.title.lower()),
+    ).ratio()
+    return ratio > 0.85
 
 
 @dataclass
@@ -176,8 +202,8 @@ def _check_duplicates(items: list[ScanResult], report: AnalysisReport) -> None:
 
     Groups duplicates into clusters (via union-find) so that N books with the
     same title produce one issue per cluster rather than O(N²) pair warnings.
-    Items with different non-None years are skipped — they are more likely
-    distinct works or editions than true duplicates.
+    Different years, series sequences, and explicit part numbers are treated as
+    distinct works or editions rather than duplicates.
     """
     by_author: defaultdict[str, list[ScanResult]] = defaultdict(list)
     for item in items:
@@ -193,16 +219,7 @@ def _check_duplicates(items: list[ScanResult], report: AnalysisReport) -> None:
             a = author_items[i]
             for j in range(i + 1, n):
                 b = author_items[j]
-                # Skip if both have year metadata and years differ — likely
-                # different works or editions, not duplicates.
-                if a.meta.year and b.meta.year and a.meta.year != b.meta.year:
-                    continue
-                ratio = SequenceMatcher(
-                    None,
-                    fold_accents(a.meta.title.lower()),
-                    fold_accents(b.meta.title.lower()),
-                ).ratio()
-                if ratio > 0.85:
+                if are_probable_duplicates(a.meta, b.meta):
                     pairs.append((id(a), id(b)))
                     pair_items.append((a, b))
 

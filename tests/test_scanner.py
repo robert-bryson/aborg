@@ -9,6 +9,7 @@ import pytest
 from audiobook_organizer.config import Config
 from audiobook_organizer.parser import AudiobookMeta
 from audiobook_organizer.scanner import (
+    _check_file,
     _normalize_dedup,
     fold_accents,
     scan_collection,
@@ -52,6 +53,24 @@ class TestScanSources:
         results, _ = scan_sources(cfg)
         assert len(results) == 1
         assert results[0].kind == "archive"
+
+    def test_archive_placeholder_tag_title_falls_back_to_filename(self, tmp_path):
+        archive = tmp_path / "14 - A Memory of Light.zip"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("audio.mp3", b"audio")
+
+        cfg = make_cfg()
+        tag_meta = AudiobookMeta(author="Robert Jordan, Brandon Sanderson", title="Unknown Title")
+        with (
+            patch("audiobook_organizer.scanner.MIN_ARCHIVE_SIZE", 0),
+            patch("audiobook_organizer.scanner._read_tags_from_zip", return_value=tag_meta),
+        ):
+            result = _check_file(archive, cfg)
+
+        assert result is not None
+        assert result.meta.author == "Robert Jordan, Brandon Sanderson"
+        assert result.meta.title == "A Memory of Light"
 
     def test_skips_non_audiobook_archive(self, tmp_path):
         """Archives without audio content or without Author - Title naming are skipped."""

@@ -27,6 +27,7 @@ from mutagen import MutagenError
 from .config import Config
 from .parser import (
     AudiobookMeta,
+    _clean_tag_value,
     extract_series_from_title,
     looks_like_author,
     merge_meta,
@@ -305,8 +306,9 @@ def _read_tags_from_zip(path: Path, audio_exts: frozenset[str]) -> AudiobookMeta
             for k in keys:
                 vals = tags.get(k)
                 if vals:
-                    raw = str(vals[0]).strip()
-                    return raw if raw else None
+                    cleaned = _clean_tag_value(vals[0])
+                    if cleaned:
+                        return cleaned
             return None
 
         meta = AudiobookMeta()
@@ -318,7 +320,8 @@ def _read_tags_from_zip(path: Path, audio_exts: frozenset[str]) -> AudiobookMeta
             if looks_like_author(candidate):
                 meta.author = candidate
                 break
-        title = _get("album", "title")
+        album_values = tags.get("album")
+        title = _clean_tag_value(album_values[0]) if album_values else _get("title")
         if title:
             meta.title = title
         meta.year = _get("date", "year")

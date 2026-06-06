@@ -11,6 +11,7 @@ from audiobook_organizer.analyzer import (
     _check_metadata_quality,
     analyze_collection,
     apply_fixes,
+    are_probable_duplicates,
 )
 from audiobook_organizer.parser import AudiobookMeta, flip_author_name, is_last_first
 from audiobook_organizer.scanner import ScanResult
@@ -526,6 +527,18 @@ class TestDuplicateDetectionClustering:
         report = analyze_collection(tmp_path, cfg)
         dup_issues = [i for i in report.issues if i.category == "duplicate"]
         assert len(dup_issues) == 0
+
+    def test_numbered_parts_not_flagged(self):
+        first = AudiobookMeta(author="Author", title="A Feast for Crows - Part 1")
+        second = AudiobookMeta(author="Author", title="A Feast for Crows - Part 2")
+
+        assert are_probable_duplicates(first, second) is False
+
+    def test_same_title_and_year_is_flagged(self):
+        first = AudiobookMeta(author="Author", title="Heart - A History", year="2018")
+        second = AudiobookMeta(author="Author", title="Heart - A History", year="2018")
+
+        assert are_probable_duplicates(first, second) is True
 
 
 class TestAuthorVariantFalsePositives:

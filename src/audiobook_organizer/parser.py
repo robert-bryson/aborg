@@ -788,35 +788,40 @@ def parse_audio_tags(path: Path) -> AudiobookMeta:
         for k in keys:
             vals = tags.get(k)
             if vals:
-                raw = str(vals[0]).strip()
-                return html.unescape(raw) if raw else None
+                cleaned = _clean_tag_value(vals[0])
+                if cleaned:
+                    return cleaned
         return None
 
-    # Author — handle / separated contributors (Author/Narrator/Copyright).
-    for raw_candidate in (_get("albumartist", "album_artist"), _get("artist")):
-        if not raw_candidate:
-            continue
-        if "/" in raw_candidate:
-            parts = [p.strip() for p in raw_candidate.split("/") if p.strip()]
-            people = [_strip_author_noise(p) for p in parts if not _is_copyright_notice(p)]
+    album_people = _tag_people(_get("albumartist", "album_artist"))
+    artist_raw = _get("artist")
+    artist_people = _tag_people(artist_raw)
+    if album_people:
+        meta.author = ", ".join(album_people)
+        author_keys = {_normalize_to_first_last(person) for person in album_people}
+        extra_people = [
+            person
+            for person in artist_people
+            if _normalize_to_first_last(person) not in author_keys
+        ]
+        if extra_people:
+            meta.narrator = extra_people[-1]
+    elif artist_people:
+        if artist_raw and "/" in artist_raw and len(artist_people) > 1:
+            # OverDrive-style artist tags encode Authors/Narrator. Preserve all
+            # contributors before the final person as co-authors.
+            meta.author = ", ".join(artist_people[:-1])
+            meta.narrator = artist_people[-1]
         else:
-            people = [_strip_author_noise(raw_candidate)]
-        # Deduplicate repeated names (e.g. "Noam Chomsky, Noam Chomsky & Noam Chomsky")
-        people = _dedup_author_names(people)
-        for person in people:
-            if looks_like_author(person):
-                meta.author = person
-                break
-        if meta.author != "Unknown Author":
-            # Use remaining valid people as narrator fallback.
-            if meta.narrator is None and len(people) > 1:
-                for person in people[1:]:
-                    if person.lower() != meta.author.lower() and looks_like_author(person):
-                        meta.narrator = person
-                        break
-            break
+            meta.author = ", ".join(artist_people)
 
-    raw_title = _get("album", "title") or meta.title
+    album_values = tags.get("album")
+    if album_values:
+        # A present-but-useless album tag should not fall through to a track
+        # title such as "Part 1, Chapter 01"; filename metadata is safer.
+        raw_title = _clean_tag_value(album_values[0]) or meta.title
+    else:
+        raw_title = _get("title") or meta.title
     meta.title = _clean_tag_title(raw_title)
 
     meta.year = _get("date", "year") or meta.year
@@ -847,6 +852,48 @@ def _clean_tag_title(title: str) -> str:
     # "G-Man (Pulitzer Prize Winner)" → "G-Man"
     cleaned = _NOISE_PAREN_RE.sub("", cleaned)
     return cleaned.strip() or title
+
+
+_TAG_PLACEHOLDERS = frozenset(
+    {
+        "n/a",
+        "na",
+        "none",
+        "null",
+        "unknown",
+        "unknown author",
+        "unknown title",
+        "untitled",
+    }
+)
+
+
+def _clean_tag_value(value: object) -> str | None:
+    """Return a useful decoded tag value, ignoring common placeholders."""
+    cleaned = html.unescape(str(value)).strip()
+    if not cleaned or cleaned.casefold() in _TAG_PLACEHOLDERS:
+        return None
+    return cleaned
+
+
+def _tag_people(raw: str | None) -> list[str]:
+    """Parse and validate people from a contributor tag."""
+    if not raw:
+        return []
+    parts = [part.strip() for part in raw.split("/") if part.strip()]
+    people = [_strip_author_noise(part) for part in parts if not _is_copyright_notice(part)]
+    return [person for person in _dedup_author_names(people) if looks_like_author(person)]
+
+
+def _title_has_trailing_year(title: str, year: str) -> bool:
+    """Return whether *year* is an explicit trailing title component."""
+    if re.search(rf"\s*\({re.escape(year)}\)\s*$", title):
+        return True
+    match = re.search(rf"\s+[-\u2013\u2014]\s+{re.escape(year)}\s*$", title)
+    if not match:
+        return False
+    prefix = title[: match.start()].rstrip()
+    return not re.search(r"\b\d{4}$", prefix)
 
 
 def strip_narrator_from_author(meta: AudiobookMeta) -> AudiobookMeta:
@@ -900,6 +947,16 @@ def merge_meta(*sources: AudiobookMeta) -> AudiobookMeta:
             result.translator = src.translator
         if result.source_path is None and src.source_path:
             result.source_path = src.source_path
+
+    # A lower-priority source can contain the correct publication year while a
+    # bad tag supplies another date. Trust a candidate year explicitly repeated
+    # at the end of the selected title, but do not mistake year ranges for dates.
+    for src in sources:
+        if src.year and _title_has_trailing_year(result.title, src.year):
+            result.year = src.year
+            result.title = _strip_embedded_year(result.title, src.year)
+            break
+
     strip_narrator_from_author(result)
     return result
 

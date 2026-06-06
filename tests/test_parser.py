@@ -235,6 +235,26 @@ class TestMergeMeta:
         assert merged.year == "2020"
         assert merged.narrator == "Narrator B"
 
+    def test_title_year_overrides_conflicting_tag_date(self):
+        tag = AudiobookMeta(title="Dune - Frank Herbert - 1965", year="1962")
+        filename = AudiobookMeta(title="Dune", year="1965")
+
+        merged = merge_meta(tag, filename)
+
+        assert merged.year == "1965"
+        assert merged.title == "Dune - Frank Herbert"
+
+    def test_year_range_is_not_treated_as_publication_year(self):
+        tag = AudiobookMeta(
+            title="The Empire Must Die - Russia's Revolutionary Collapse, 1900 - 1917",
+            year="2000",
+        )
+        filename = AudiobookMeta(year="1917")
+
+        merged = merge_meta(tag, filename)
+
+        assert merged.year == "2000"
+
     def test_all_defaults(self):
         merged = merge_meta(AudiobookMeta(), AudiobookMeta())
         assert merged.author == "Unknown Author"
@@ -557,6 +577,23 @@ class TestParseAudioTags:
         meta = parse_audio_tags(Path("/fake/audio.mp3"))
         assert meta.author == "Isaac Asimov"
 
+    @patch("audiobook_organizer.parser._read_translator")
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_albumartist_preserves_coauthors(self, mock_mutagen, mock_translator):
+        mock_translator.return_value = None
+        mock_mutagen.return_value = self._mock_tags(
+            {
+                "albumartist": "Robert D. Putnam/David E. Campbell",
+                "artist": "Robert D. Putnam/David E. Campbell/Dan John Miller",
+                "album": "American Grace",
+            }
+        )
+
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+
+        assert meta.author == "Robert D. Putnam, David E. Campbell"
+        assert meta.narrator == "Dan John Miller"
+
     @patch("audiobook_organizer.parser.MutagenFile")
     def test_no_tags(self, mock_mutagen):
         mock_mutagen.return_value = None
@@ -576,6 +613,37 @@ class TestParseAudioTags:
         assert meta.author == "Ron Chernow"
         assert meta.narrator == "Scott Brick"
         assert meta.title == "Alexander Hamilton"
+
+    @patch("audiobook_organizer.parser._read_translator")
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_slash_separated_coauthors_and_narrator(self, mock_mutagen, mock_translator):
+        mock_translator.return_value = None
+        mock_mutagen.return_value = self._mock_tags(
+            {
+                "artist": "Robert D. Putnam/David E. Campbell/Dan John Miller",
+                "album": "American Grace",
+            }
+        )
+
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+
+        assert meta.author == "Robert D. Putnam, David E. Campbell"
+        assert meta.narrator == "Dan John Miller"
+
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_placeholder_title_is_ignored(self, mock_mutagen):
+        mock_mutagen.return_value = self._mock_tags(
+            {
+                "artist": "Robert Jordan",
+                "album": "Unknown",
+                "title": "A Memory of Light (Unabridged) Part 1, Chapter 01",
+            }
+        )
+
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+
+        assert meta.author == "Robert Jordan"
+        assert meta.title == "Unknown Title"
 
     @patch("audiobook_organizer.parser._read_translator")
     @patch("audiobook_organizer.parser.MutagenFile")
