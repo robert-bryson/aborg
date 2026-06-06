@@ -14,7 +14,12 @@ if TYPE_CHECKING:
     from .cache import ScanCache
 
 from .config import Config
-from .parser import flip_author_name, is_last_first, looks_like_author
+from .parser import (
+    _normalize_to_first_last,
+    flip_author_name,
+    is_last_first,
+    looks_like_author,
+)
 from .scanner import (
     CollectionScan,
     ScanResult,
@@ -68,14 +73,6 @@ class AnalysisReport:
 
 # Re-export the callback type aliases so CLI can use a single import.
 ProgressCallback = Callable[[str], None]
-
-
-def _normalize_to_first_last(name: str) -> str:
-    """Normalize a single author name to 'First Last' lowercase form."""
-    name = name.strip()
-    if is_last_first(name):
-        name = flip_author_name(name)
-    return name.lower()
 
 
 def _same_author(tag_author: str, folder_author: str) -> bool:
@@ -175,10 +172,20 @@ def _check_unknown_metadata(items: list[ScanResult], report: AnalysisReport) -> 
 
 
 def _check_duplicates(items: list[ScanResult], report: AnalysisReport) -> None:
-    """Detect possible duplicate audiobooks by fuzzy title matching."""
+    """Detect possible duplicate audiobooks by fuzzy title matching.
+
+    Groups duplicates into clusters (via union-find) so that N books with the
+    same title produce one issue per cluster rather than O(N²) pair warnings.
+    Items with different non-None years are skipped — they are more likely
+    distinct works or editions than true duplicates.
+    """
     by_author: defaultdict[str, list[ScanResult]] = defaultdict(list)
     for item in items:
         by_author[fold_accents(item.meta.author.lower())].append(item)
+
+    # Collect matching pairs, then cluster them.
+    pairs: list[tuple[int, int]] = []  # (global index i, global index j)
+    pair_items: list[tuple[ScanResult, ScanResult]] = []
 
     for author_items in by_author.values():
         n = len(author_items)
@@ -186,40 +193,92 @@ def _check_duplicates(items: list[ScanResult], report: AnalysisReport) -> None:
             a = author_items[i]
             for j in range(i + 1, n):
                 b = author_items[j]
+                # Skip if both have year metadata and years differ — likely
+                # different works or editions, not duplicates.
+                if a.meta.year and b.meta.year and a.meta.year != b.meta.year:
+                    continue
                 ratio = SequenceMatcher(
                     None,
                     fold_accents(a.meta.title.lower()),
                     fold_accents(b.meta.title.lower()),
                 ).ratio()
                 if ratio > 0.85:
-                    report.duplicates.append((a, b))
-                    report.issues.append(
-                        Issue(
-                            severity="warning",
-                            category="duplicate",
-                            message=f"Possible duplicate: '{a.meta.title}' vs '{b.meta.title}'",
-                            path=a.path,
-                            suggestion=f"Compare with {b.path}",
-                        )
-                    )
+                    pairs.append((id(a), id(b)))
+                    pair_items.append((a, b))
+
+    if not pairs:
+        return
+
+    # Union-find to cluster duplicates.
+    parent: dict[int, int] = {}
+
+    def _find(x: int) -> int:
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def _union(x: int, y: int) -> None:
+        parent[_find(x)] = _find(y)
+
+    # Map item id → ScanResult for cluster reporting.
+    id_to_item: dict[int, ScanResult] = {}
+    for a, b in pair_items:
+        id_to_item[id(a)] = a
+        id_to_item[id(b)] = b
+        _union(id(a), id(b))
+
+    # Build clusters.
+    clusters: defaultdict[int, list[ScanResult]] = defaultdict(list)
+    for item_id, item in id_to_item.items():
+        clusters[_find(item_id)].append(item)
+
+    for cluster in clusters.values():
+        if len(cluster) < 2:
+            continue
+        report.duplicates.append((cluster[0], cluster[1]))
+        titles = sorted({it.meta.title for it in cluster})
+        title_label = titles[0] if len(titles) == 1 else f"{titles[0]}' / '{titles[-1]}"
+        report.issues.append(
+            Issue(
+                severity="warning",
+                category="duplicate",
+                message=(f"Possible duplicate cluster ({len(cluster)} items): '{title_label}'"),
+                path=cluster[0].path,
+                suggestion=("Compare: " + ", ".join(str(it.path) for it in cluster[1:])),
+            )
+        )
 
 
 def _check_author_variants(authors: set[str], report: AnalysisReport) -> None:
-    """Detect similar author names that might be variants of the same person."""
+    """Detect similar author names that might be variants of the same person.
+
+    For names in "Last, First" format, the last-name portions must also be
+    similar (ratio > 0.7) to avoid false positives like "Caro, Robert" vs
+    "Harris, Robert" where only the first name matches.
+    """
     author_list = sorted(authors)
     for i, a in enumerate(author_list):
         for b in author_list[i + 1 :]:
             ratio = SequenceMatcher(None, fold_accents(a.lower()), fold_accents(b.lower())).ratio()
-            if 0.75 < ratio < 1.0:
-                report.author_variants.append((a, b))
-                report.issues.append(
-                    Issue(
-                        severity="info",
-                        category="naming",
-                        message=f"Similar author names: '{a}' and '{b}'",
-                        suggestion="Consider standardizing to one name",
-                    )
+            if ratio <= 0.75 or ratio >= 1.0:
+                continue
+            # If both are "Last, First", require last-name similarity to
+            # avoid false positives from shared first names.
+            if is_last_first(a) and is_last_first(b):
+                last_a = fold_accents(a.split(",", 1)[0].strip().lower())
+                last_b = fold_accents(b.split(",", 1)[0].strip().lower())
+                if SequenceMatcher(None, last_a, last_b).ratio() < 0.7:
+                    continue
+            report.author_variants.append((a, b))
+            report.issues.append(
+                Issue(
+                    severity="info",
+                    category="naming",
+                    message=f"Similar author names: '{a}' and '{b}'",
+                    suggestion="Consider standardizing to one name",
                 )
+            )
 
 
 def _check_empty_dirs(collection: CollectionScan, report: AnalysisReport) -> None:

@@ -63,6 +63,7 @@ class ScanCache:
         try:
             return _deserialize(entry["result"])
         except (KeyError, TypeError, ValueError):
+            # Corrupt cache entry — discard it silently
             del self._entries[key]
             self._dirty = True
             return None

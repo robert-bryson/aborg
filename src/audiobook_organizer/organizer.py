@@ -87,12 +87,23 @@ def _handle_archive(
 
     try:
         with zipfile.ZipFile(item.path) as zf:
-            # Security: validate all member paths to prevent zip-slip
+            # Security: validate all member paths to prevent zip-slip.
+            # Validation runs BEFORE creating dest_dir so a rejected zip
+            # doesn't leave orphaned empty directories.
             resolved_dest = dest_dir.resolve()
-            for member in zf.namelist():
+            for info in zf.infolist():
+                member = info.filename
+                # Normalise backslashes so traversal via "foo\..\.." is caught
+                member_normalized = member.replace("\\", "/")
+                # Reject absolute paths and directory traversal
+                if member_normalized.startswith("/") or ".." in member_normalized.split("/"):
+                    raise ValueError(f"Unsafe zip member path: {member}")
+                # Reject symlink entries (external_attr >> 28 == 0xA for symlinks)
+                if (info.external_attr >> 28) == 0xA:
+                    raise ValueError(f"Zip contains symlink entry: {member}")
                 member_path = (dest_dir / member).resolve()
                 if not member_path.is_relative_to(resolved_dest):
-                    raise ValueError(f"Unsafe zip member path: {member}")
+                    raise ValueError(f"Zip member escapes destination: {member}")
             dest_dir.mkdir(parents=True)
             zf.extractall(dest_dir)
     except zipfile.BadZipFile:
@@ -252,6 +263,8 @@ def undo_last(cfg: Config, *, dry_run: bool = False) -> list[tuple[Path, Path]]:
             continue
         _, operation, src, dest = entry
         if not dest.exists():
+            completed_indices.add(index)
+            undone.append((dest, src))
             continue
         if dry_run:
             undone.append((dest, src))
@@ -293,13 +306,16 @@ def undo_last(cfg: Config, *, dry_run: bool = False) -> list[tuple[Path, Path]]:
 
 def _parse_log_line(line: str) -> tuple[str, str, Path, Path] | None:
     """Parse current four-field logs and legacy three-field move logs."""
-    parts = line.split("\t")
-    if len(parts) == 3:
-        timestamp, source, destination = parts
-        return timestamp, "move", Path(source), Path(destination)
-    if len(parts) == 4:
-        timestamp, operation, source, destination = parts
+    current_parts = line.split("\t", maxsplit=3)
+    if len(current_parts) == 4 and current_parts[1] in {"move", "copy", "extract"}:
+        timestamp, operation, source, destination = current_parts
         return timestamp, operation, Path(source), Path(destination)
+
+    legacy_parts = line.split("\t", maxsplit=2)
+    if len(legacy_parts) == 3:
+        timestamp, source, destination = legacy_parts
+        return timestamp, "move", Path(source), Path(destination)
+
     return None
 
 

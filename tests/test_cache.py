@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from audiobook_organizer.cache import ScanCache, _fingerprint
+from audiobook_organizer.cache import CACHE_VERSION, ScanCache, _fingerprint
 from audiobook_organizer.parser import AudiobookMeta
 from audiobook_organizer.scanner import ScanResult
 
@@ -309,3 +309,32 @@ class TestCacheEdgeCases:
         assert got.tag_meta is not None
         assert got.tag_meta.author == "Tag Author"
         assert got.tag_meta.source_path == audio
+
+    def test_corrupt_entry_returns_none_and_discards(self, tmp_path):
+        """A corrupt cache entry should return None and be auto-discarded."""
+        import json
+
+        cache_file = tmp_path / "cache.json"
+        audio = tmp_path / "file.mp3"
+        audio.write_bytes(b"\x00" * 100)
+
+        # Write a valid cache with a corrupt result (missing required keys)
+        fp = _fingerprint(audio)
+        payload = {
+            "version": CACHE_VERSION,
+            "entries": {
+                str(audio): {
+                    "fp": fp,
+                    "result": {"garbage": True},  # missing path, kind, meta, size
+                }
+            },
+        }
+        cache_file.write_text(json.dumps(payload))
+
+        cache = ScanCache(cache_file)
+        assert cache.size == 1
+        # Should return None instead of crashing with KeyError
+        got = cache.get(audio)
+        assert got is None
+        # The corrupt entry should have been discarded
+        assert cache.size == 0
