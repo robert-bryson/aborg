@@ -2,6 +2,9 @@
 
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from audiobook_organizer.config import Config
 from audiobook_organizer.organizer import organize, undo_last
@@ -11,11 +14,18 @@ from audiobook_organizer.scanner import ScanResult
 
 def _scan_result(path: Path, kind: str = "audio_file", **meta_kw) -> ScanResult:
     """Helper to build a ScanResult."""
+    source_files = meta_kw.pop("source_files", ())
     defaults = {"author": "Test Author", "title": "Test Book"}
     defaults.update(meta_kw)
     meta = AudiobookMeta(source_path=path, **defaults)
     size = path.stat().st_size if path.exists() else 0
-    return ScanResult(path=path, kind=kind, meta=meta, size=size)
+    return ScanResult(
+        path=path,
+        kind=kind,
+        meta=meta,
+        size=size,
+        source_files=source_files,
+    )
 
 
 def _write(path: Path, data: bytes = b"\x00" * 1024) -> Path:
@@ -87,6 +97,28 @@ class TestOrganize:
         extracted_dir = actions[0][1]
         assert extracted_dir.exists()
 
+    def test_delete_failure_keeps_extraction_undoable(self, tmp_path):
+        zip_path = tmp_path / "src" / "book.zip"
+        zip_path.parent.mkdir(parents=True)
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("audio.mp3", b"audio")
+        cfg = Config(
+            destination=tmp_path / "dest",
+            auto_extract=True,
+            delete_after_extract=True,
+            move_log=tmp_path / "moves.log",
+        )
+        item = _scan_result(zip_path, kind="archive")
+
+        with patch("pathlib.Path.unlink", side_effect=PermissionError("locked")):
+            actions = organize([item], cfg)
+
+        assert len(actions) == 1
+        assert zip_path.exists()
+        assert actions[0][1].exists()
+        undo_last(cfg)
+        assert not actions[0][1].exists()
+
     def test_non_zip_archive_moved_not_extracted(self, tmp_path):
         """Non-zip archives (.rar, .7z) should be moved, not extracted."""
         rar_path = _write(tmp_path / "src" / "book.rar")
@@ -154,6 +186,24 @@ class TestOrganize:
         content = log.read_text()
         assert "book.mp3" in content or "Test Book" in content
 
+    def test_failure_on_later_item_keeps_earlier_action_undoable(self, tmp_path):
+        first = _write(tmp_path / "src" / "first.mp3")
+        missing = tmp_path / "src" / "missing.mp3"
+        cfg = Config(destination=tmp_path / "dest", move_log=tmp_path / "moves.log")
+
+        actions = organize(
+            [
+                _scan_result(first, title="First"),
+                _scan_result(missing, title="Missing"),
+            ],
+            cfg,
+        )
+
+        assert len(actions) == 1
+        assert not first.exists()
+        assert undo_last(cfg) == [(actions[0][1], first)]
+        assert first.exists()
+
 
 class TestUndo:
     def test_undo_moves_back(self, tmp_path):
@@ -185,6 +235,66 @@ class TestUndo:
         assert len(undone) == 1
         # File should NOT have been moved back
         assert not src.exists()
+
+    def test_undo_copy_removes_destination_and_preserves_source(self, tmp_path):
+        src = _write(tmp_path / "src" / "book.mp3")
+        cfg = Config(destination=tmp_path / "dest", move_log=tmp_path / "moves.log")
+        item = _scan_result(src)
+
+        actions = organize([item], cfg, copy=True)
+        copied = actions[0][1]
+        assert src.exists()
+        assert copied.exists()
+
+        undone = undo_last(cfg)
+
+        assert undone == [(copied, src)]
+        assert src.exists()
+        assert not copied.exists()
+
+    def test_undo_extract_removes_destination_when_archive_was_kept(self, tmp_path):
+        archive = tmp_path / "src" / "book.zip"
+        archive.parent.mkdir(parents=True)
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("audio.mp3", b"audio")
+        cfg = Config(
+            destination=tmp_path / "dest",
+            auto_extract=True,
+            move_log=tmp_path / "moves.log",
+        )
+
+        actions = organize([_scan_result(archive, kind="archive")], cfg)
+        extracted = actions[0][1]
+        assert archive.exists()
+        assert extracted.exists()
+
+        undo_last(cfg)
+
+        assert archive.exists()
+        assert not extracted.exists()
+
+    def test_undo_extract_rebuilds_deleted_archive(self, tmp_path):
+        archive = tmp_path / "src" / "book.zip"
+        archive.parent.mkdir(parents=True)
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("nested/audio.mp3", b"audio")
+        cfg = Config(
+            destination=tmp_path / "dest",
+            auto_extract=True,
+            delete_after_extract=True,
+            move_log=tmp_path / "moves.log",
+        )
+
+        actions = organize([_scan_result(archive, kind="archive")], cfg)
+        extracted = actions[0][1]
+        assert not archive.exists()
+
+        undo_last(cfg)
+
+        assert archive.exists()
+        assert not extracted.exists()
+        with zipfile.ZipFile(archive) as zf:
+            assert zf.read("nested/audio.mp3") == b"audio"
 
 
 class TestCollisionHandling:
@@ -304,8 +414,8 @@ class TestCorruptZipFallback:
 
 
 class TestDirectoryMerge:
-    def test_merge_into_existing_dir(self, tmp_path):
-        """Moving a directory into an existing one should merge contents."""
+    def test_existing_destination_is_refused(self, tmp_path):
+        """Existing book directories must not be silently merged or overwritten."""
         dest = tmp_path / "dest"
         cfg = Config(destination=dest, move_log=tmp_path / "log")
 
@@ -318,18 +428,16 @@ class TestDirectoryMerge:
         dest_dir = actions1[0][1]
         assert (dest_dir / "existing.mp3").exists()
 
-        # Second organize with same metadata merges into existing
+        # A second item with the same metadata is left untouched.
         src2 = tmp_path / "src2" / "Author - Book"
         _write(src2 / "new_track.mp3")
         item2 = _scan_result(src2, kind="audio_dir")
         actions2 = organize([item2], cfg)
-        assert len(actions2) == 1
+        assert actions2 == []
 
-        # Both files should exist in the destination
         assert (dest_dir / "existing.mp3").exists()
-        assert (dest_dir / "new_track.mp3").exists()
-        # Source should be removed
-        assert not src2.exists()
+        assert not (dest_dir / "new_track.mp3").exists()
+        assert src2.exists()
 
 
 class TestSymlinkProtection:
@@ -338,7 +446,10 @@ class TestSymlinkProtection:
         real_dir = tmp_path / "real_audiobook"
         _write(real_dir / "track.mp3")
         link_dir = tmp_path / "link_audiobook"
-        link_dir.symlink_to(real_dir)
+        try:
+            link_dir.symlink_to(real_dir, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks require additional privileges on this platform")
 
         dest = tmp_path / "dest"
         cfg = Config(destination=dest, move_log=tmp_path / "log")
@@ -356,7 +467,10 @@ class TestSymlinkProtection:
         book_dir = tmp_path / "src" / "Author - Book"
         _write(book_dir / "track.mp3")
         # Create a symlink inside the audiobook dir
-        (book_dir / "link.mp3").symlink_to(book_dir / "track.mp3")
+        try:
+            (book_dir / "link.mp3").symlink_to(book_dir / "track.mp3")
+        except OSError:
+            pytest.skip("file symlinks require additional privileges on this platform")
 
         dest = tmp_path / "dest"
         cfg = Config(destination=dest, move_log=tmp_path / "log")
@@ -412,6 +526,50 @@ class TestNonZipArchiveCopy:
         actions = organize([item], cfg, copy=True)
         assert len(actions) == 1
         assert sz_path.exists()  # source preserved
+
+    def test_corrupt_zip_copy_preserves_source(self, tmp_path):
+        zip_path = _write(tmp_path / "src" / "corrupt.zip", b"not a zip")
+        cfg = Config(
+            destination=tmp_path / "dest",
+            auto_extract=True,
+            move_log=tmp_path / "log",
+        )
+
+        actions = organize([_scan_result(zip_path, kind="archive")], cfg, copy=True)
+
+        assert len(actions) == 1
+        assert zip_path.exists()
+        assert actions[0][1].exists()
+
+
+class TestAudioGroup:
+    def test_group_moves_only_its_source_files_and_undoes_them(self, tmp_path):
+        flat = tmp_path / "src" / "mixed"
+        first = _write(flat / "one-01.mp3")
+        second = _write(flat / "one-02.mp3")
+        unrelated = _write(flat / "two.mp3")
+        item = _scan_result(
+            flat,
+            kind="audio_group",
+            source_files=(first, second),
+            author="Author One",
+            title="Book One",
+        )
+        cfg = Config(destination=tmp_path / "dest", move_log=tmp_path / "moves.log")
+
+        actions = organize([item], cfg)
+
+        assert len(actions) == 2
+        assert not first.exists()
+        assert not second.exists()
+        assert unrelated.exists()
+
+        undone = undo_last(cfg)
+
+        assert len(undone) == 2
+        assert first.exists()
+        assert second.exists()
+        assert unrelated.exists()
 
 
 class TestBatchTimestamp:

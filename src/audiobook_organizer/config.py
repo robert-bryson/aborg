@@ -35,15 +35,30 @@ class Config:
     libby_keep_cover: bool = False
     libby_book_folder_format: str = ""
 
+    # User-defined single-name → full-name overrides (merged with built-in table)
+    known_authors: dict[str, str] = field(default_factory=dict)
+
     DEFAULT_PATTERNS: ClassVar[list[str]] = [
-        # Author - Series Book N - Title (Year) [Narrator]
-        r"(?P<author>.+?) - (?P<series>.+?)\s*(?:Book|Vol\.?|Volume)\s*(?P<sequence>\d+)"
-        r"\s*-\s*(?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*\[(?P<narrator>.+?)\])?$",
-        # Author - Title (Year) [Narrator]
+        # N - Title - Author - Year (e.g. "2 - Dune - Frank Herbert - 1965")
+        # The year is required because the no-year form is inherently ambiguous.
+        r"(?P<sequence>\d+)\s*-\s*(?P<title>.+)\s*-\s*(?P<author>[^\d]+?)"
+        r"\s*-\s*(?P<year>\d{4})\s*$",
+        # Author - Series Book N - Title (Year) [{Narrator}]  (float sequences like 0.2 supported)
+        r"(?P<author>.+?) - (?P<series>.+?)\s*(?:Book|Vol\.?|Volume)\s*(?P<sequence>\d+(?:\.\d+)?)"
+        r"\s*-\s*(?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*[\[{](?P<narrator>[^\]}]+)[\]}])?$",
+        # Author - Title - Series, Book N [{Narrator}]  (e.g. "Title - Teixcalaan Series, Book 2")
+        r"(?P<author>.+?) - (?P<title>.+?)\s+-\s+(?P<series>.+?),\s*"
+        r"(?:Book|Vol\.?|Volume)\s*(?P<sequence>\d+(?:\.\d+)?)"
+        r"(?:\s*[\[{](?P<narrator>[^\]}]+)[\]}])?$",
+        # Author - Title (Year) [{Narrator}]
         r"(?P<author>.+?) - (?P<title>.+?)"
-        r"(?:\s*\((?P<year>\d{4})\))?(?:\s*\[(?P<narrator>.+?)\])?$",
+        r"(?:\s*\((?P<year>\d{4})\))?(?:\s*[\[{](?P<narrator>[^\]}]+)[\]}])?$",
         # Title - Author (Year)
         r"(?P<title>.+?) - (?P<author>.+?)(?:\s*\((?P<year>\d{4})\))?$",
+        # Series N Title  (e.g. "The Expanse 01 Leviathan Wakes", "The Expanse 02.5 Gods of Risk")
+        # Requires 2+ words for the series name to avoid false matches like 'The 7 Habits'.
+        r"(?P<series>(?:[^\W\d_]+\s+){2,}?)(?P<sequence>\d+(?:\.\d+)?)\s+(?P<title>.+?)"
+        r"(?:\s*\((?P<year>\d{4})\))?(?:\s*[\[{](?P<narrator>[^\]}]+)[\]}])?$",
         # Author_Title
         r"(?P<author>[^_]+)_(?P<title>.+)$",
     ]
@@ -114,6 +129,12 @@ class Config:
             fmt = str(raw["author_name_format"]).strip().lower()
             if fmt in ("last_first", "first_last"):
                 cfg.author_name_format = fmt
+        if "known_authors" in raw and isinstance(raw["known_authors"], dict):
+            cfg.known_authors = {
+                str(key).strip().casefold(): str(value).strip()
+                for key, value in raw["known_authors"].items()
+                if str(key).strip() and str(value).strip()
+            }
 
         # Libby settings
         libby = raw.get("libby", {})
@@ -149,6 +170,8 @@ class Config:
             "min_file_size": self.min_file_size,
             "move_log": str(self.move_log),
             "author_name_format": self.author_name_format,
+            # only write known_authors when non-empty to keep default configs clean
+            **({"known_authors": dict(self.known_authors)} if self.known_authors else {}),
             "libby": {
                 "settings_folder": str(self.libby_settings),
                 "merge": self.libby_merge,

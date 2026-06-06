@@ -103,7 +103,7 @@ class TestConfigSave:
         assert out.exists()
 
         loaded = yaml.safe_load(out.read_text())
-        assert loaded["destination"] == "/test/dest"
+        assert Path(loaded["destination"]) == Path("/test/dest")
 
     def test_roundtrip(self, tmp_path):
         original = Config(
@@ -131,6 +131,17 @@ class TestConfigSave:
         loaded = Config.load(out)
         assert loaded.companion_extensions == frozenset({".pdf", ".epub"})
         assert loaded.author_name_format == "first_last"
+
+    def test_known_authors_are_normalized_and_round_trip(self, tmp_path):
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(yaml.safe_dump({"known_authors": {" Proust ": " Marcel Proust "}}))
+
+        cfg = Config.load(cfg_file)
+        assert cfg.known_authors == {"proust": "Marcel Proust"}
+
+        out = tmp_path / "saved.yaml"
+        cfg.save(out)
+        assert Config.load(out).known_authors == cfg.known_authors
 
     def test_minimal_config_gets_defaults(self, tmp_path):
         """A config with just source_dirs and destination should still be functional."""

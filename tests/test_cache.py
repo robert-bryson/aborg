@@ -92,6 +92,15 @@ class TestScanCache:
         cache = ScanCache(tmp_path / "cache.json")
         assert cache.get(tmp_path / "nonexistent.mp3") is None
 
+    def test_cache_miss_when_context_changes(self, tmp_path):
+        audio = tmp_path / "file.mp3"
+        audio.write_bytes(b"audio")
+        cache = ScanCache(tmp_path / "cache.json")
+        cache.put(audio, _make_result(audio), context="settings-a")
+
+        assert cache.get(audio, context="settings-a") is not None
+        assert cache.get(audio, context="settings-b") is None
+
     def test_persistence(self, tmp_path):
         cache_file = tmp_path / "cache.json"
         audio = tmp_path / "file.mp3"
@@ -166,11 +175,12 @@ class TestScanCache:
         )
         result = ScanResult(
             path=audio,
-            kind="audio_file",
+            kind="audio_group",
             meta=meta,
             size=100,
             has_cover=True,
             file_count=0,
+            source_files=(audio,),
         )
 
         cache = ScanCache(cache_file)
@@ -185,6 +195,7 @@ class TestScanCache:
         assert got.meta.year == "2024"
         assert got.meta.narrator == "Narrator"
         assert got.meta.source_path == audio
+        assert got.source_files == (audio,)
 
 
 class TestCacheEdgeCases:
@@ -200,6 +211,14 @@ class TestCacheEdgeCases:
         cache_file = tmp_path / "cache.json"
         cache_file.write_text(json.dumps({"version": 999, "entries": {"a": {}}}))
         cache = ScanCache(cache_file)
+        assert cache.size == 0
+
+    def test_load_non_object_json(self, tmp_path):
+        cache_file = tmp_path / "cache.json"
+        cache_file.write_text("[]")
+
+        cache = ScanCache(cache_file)
+
         assert cache.size == 0
 
     def test_get_returns_none_on_fingerprint_change(self, tmp_path):
@@ -221,6 +240,31 @@ class TestCacheEdgeCases:
         cache = ScanCache(tmp_path / "cache.json")
         result = _make_result(tmp_path / "nonexistent.mp3")
         cache.put(tmp_path / "nonexistent.mp3", result)
+        assert cache.size == 0
+
+    def test_malformed_cached_result_is_discarded(self, tmp_path):
+        import json
+
+        audio = tmp_path / "file.mp3"
+        audio.write_bytes(b"audio")
+        cache_file = tmp_path / "cache.json"
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "entries": {
+                        str(audio): {
+                            "fp": _fingerprint(audio),
+                            "result": {"missing": "required fields"},
+                        }
+                    },
+                }
+            )
+        )
+
+        cache = ScanCache(cache_file)
+
+        assert cache.get(audio) is None
         assert cache.size == 0
 
     def test_deserialize_preserves_data(self, tmp_path):

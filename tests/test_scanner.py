@@ -4,6 +4,8 @@ import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from audiobook_organizer.config import Config
 from audiobook_organizer.parser import AudiobookMeta
 from audiobook_organizer.scanner import (
@@ -362,7 +364,7 @@ class TestMessyAsimovCollection:
 
         robot = next(r for r in collection.items if "Robot" in r.path.name)
         assert robot.meta.dest_folder_name() == "1950 - I, Robot"
-        assert str(robot.meta.dest_relative()) == "Asimov, Issac/1950 - I, Robot"
+        assert robot.meta.dest_relative() == Path("Asimov, Issac/1950 - I, Robot")
 
     def test_foundation_folder_only_author_and_year(self, tmp_path):
         """'Isaac Asimov - 1951' under 'Asimov, Issac' → author + year, title unknown."""
@@ -511,7 +513,7 @@ class TestMessyAsimovCollection:
 
         found = next(r for r in collection.items if "1951" in r.path.name)
         assert found.meta.dest_folder_name() == "1951 - Book 1 - Foundation"
-        assert str(found.meta.dest_relative()) == "Asimov, Issac/1951 - Book 1 - Foundation"
+        assert found.meta.dest_relative() == Path("Asimov, Issac/1951 - Book 1 - Foundation")
 
 
 # ── _normalize_dedup ─────────────────────────────────────────────────────
@@ -605,7 +607,10 @@ class TestScanSourcesCallbacks:
         _make_audio_file(src / "Author - Title.mp3")
         # Create a symlink to the same dir
         link = tmp_path / "link"
-        link.symlink_to(src)
+        try:
+            link.symlink_to(src, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks require additional privileges on this platform")
 
         cfg = make_cfg(source_dirs=[src, link])
         results, _ = scan_sources(cfg)
@@ -637,6 +642,58 @@ class TestScanSourcesCallbacks:
         # Second scan uses cache
         results2, _ = scan_sources(cfg, cache=cache)
         assert len(results2) == 1
+
+    def test_same_title_with_different_years_is_not_deduplicated(self, tmp_path):
+        src = tmp_path / "downloads"
+        _make_audio_file(src / "Author - Title (2000).mp3")
+        _make_audio_file(src / "Author - Title (2001).mp3")
+
+        cfg = make_cfg(source_dirs=[src])
+        results, _ = scan_sources(cfg)
+
+        assert {result.meta.year for result in results} == {"2000", "2001"}
+
+
+class TestSourceContainers:
+    def test_single_wrapper_directory_is_descended(self, tmp_path):
+        src = tmp_path / "downloads"
+        wrapper = src / "download-wrapper"
+        book = wrapper / "Author - Title"
+        _make_audio_file(book / "track.mp3")
+
+        cfg = make_cfg(source_dirs=[src])
+        results, _ = scan_sources(cfg)
+
+        assert len(results) == 1
+        assert results[0].path == book
+
+    def test_flat_multi_album_directory_tracks_exact_files(self, tmp_path):
+        src = tmp_path / "downloads"
+        flat = src / "mixed"
+        first = flat / "book-one.mp3"
+        second = flat / "book-two.mp3"
+        _make_audio_file(first)
+        _make_audio_file(second)
+
+        def fake_mutagen(path, *, easy):
+            album = "Book One" if Path(path) == first else "Book Two"
+            return MagicMock(tags={"album": [album]})
+
+        def fake_tags(path):
+            if Path(path) == first:
+                return AudiobookMeta(author="Author One", title="Book One")
+            return AudiobookMeta(author="Author Two", title="Book Two")
+
+        cfg = make_cfg(source_dirs=[src])
+        with (
+            patch("audiobook_organizer.scanner.MutagenFile", side_effect=fake_mutagen),
+            patch("audiobook_organizer.scanner.parse_audio_tags", side_effect=fake_tags),
+        ):
+            results, _ = scan_sources(cfg)
+
+        assert len(results) == 2
+        assert {result.kind for result in results} == {"audio_group"}
+        assert {result.source_files for result in results} == {(first,), (second,)}
 
 
 class TestScanCollectionEdgeCases:
@@ -724,3 +781,21 @@ class TestScanCollectionEdgeCases:
             result2 = scan_collection(root, cfg, cache=cache)
 
         assert len(result1.items) == len(result2.items)
+
+    def test_cache_does_not_mix_read_tags_modes(self, tmp_path):
+        from audiobook_organizer.cache import ScanCache
+
+        root = tmp_path / "collection"
+        book = root / "Author" / "Book Title"
+        _make_audio_file(book / "track.mp3")
+        cache = ScanCache(tmp_path / "cache.json")
+        cfg = make_cfg()
+
+        without_tags = scan_collection(root, cfg, read_tags=False, cache=cache)
+        with patch("audiobook_organizer.scanner.parse_audio_tags") as mock_tags:
+            mock_tags.return_value = AudiobookMeta(author="Author", title="Tagged Title")
+            with_tags = scan_collection(root, cfg, read_tags=True, cache=cache)
+
+        mock_tags.assert_called_once()
+        assert without_tags.items[0].tag_meta is None
+        assert with_tags.items[0].tag_meta is not None

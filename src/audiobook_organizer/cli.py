@@ -31,7 +31,9 @@ from .fetcher import (
 )
 from .organizer import organize, undo_last
 from .parser import (
+    KNOWN_SINGLE_NAME_AUTHORS,
     AudiobookMeta,
+    extract_series_from_title,
     flip_author_name,
     is_last_first,
     looks_like_author,
@@ -41,10 +43,11 @@ from .parser import (
     parse_filename,
     parse_title_folder,
     path_parent_name,
+    resolve_single_name_author,
     split_path_parts,
     strip_author_from_title,
 )
-from .scanner import ScanResult, scan_collection, scan_sources
+from .scanner import ScanResult, fold_accents, scan_collection, scan_sources
 
 console = Console()
 
@@ -98,13 +101,18 @@ def _make_hit_callback(
         author = result.meta.author
         warn = ""
         if author != "Unknown Author" and " " not in author and "," not in author:
-            # Try to match this single-name author against known full-name authors
-            author_low = author.lower()
-            match = known_authors.get(author_low)
-            if match:
-                warn = f"  [yellow]\u26a0 single-name author (possible match: {match})[/yellow]"
-            else:
-                warn = "  [yellow]\u26a0 single-name author[/yellow]"
+            # Suppress warning for known canonical mononyms (Xenophon, Molière, Homer…)
+            # Use accent-folded key so resolved forms like "Molière" still match "moliere"
+            _resolved = KNOWN_SINGLE_NAME_AUTHORS.get(fold_accents(author.lower()), "")
+            _is_known_mononym = bool(_resolved) and " " not in _resolved and "-" not in _resolved
+            if not _is_known_mononym:
+                # Try to match this single-name author against known full-name authors
+                author_low = author.lower()
+                match = known_authors.get(author_low)
+                if match:
+                    warn = f"  [yellow]\u26a0 single-name author (possible match: {match})[/yellow]"
+                else:
+                    warn = "  [yellow]\u26a0 single-name author[/yellow]"
 
         # Track full-name authors by surname for single-name matching.
         if " " in author or "," in author:
@@ -114,7 +122,7 @@ def _make_hit_callback(
             known_authors[surname] = author
 
         # Near-duplicate title detection (fuzzy match within same author).
-        author_key = author.lower()
+        author_key = fold_accents(author.lower())
         title_lower = result.meta.title.lower()
         near_dupes: list[str] = []
         for prev_title in titles_by_author.get(author_key, []):
@@ -483,18 +491,28 @@ def org(
             dest_full = cfg.destination / item.meta.dest_relative(
                 author_format=cfg.author_name_format,
             )
+            item_sources = list(item.source_files) or [item.path]
             if dest_full.exists():
                 skipped += 1
-                exist_sources.append(item.path)
+                exist_sources.extend(item_sources)
                 continue
             status.update(f"[bold green]{verb}:[/bold green] {item.meta.title}")
             result = organize([item], cfg, dry_run=dry_run, copy=copy, batch_ts=batch_ts)
             if result:
-                done += len(result)
-                moved_sources.append(item.path)
-                console.print(
-                    f"  [green]✓[/green] [dim]{i}.[/dim] {item.meta.author} — {item.meta.title}"
-                )
+                completed_sources = [source for source, _destination in result]
+                moved_sources.extend(completed_sources)
+                if item.source_files and len(completed_sources) != len(item.source_files):
+                    failed += 1
+                    console.print(
+                        f"  [red]partial[/red] [dim]{i}.[/dim]"
+                        f" {item.meta.author} — {item.meta.title}"
+                        f" ({len(completed_sources)}/{len(item.source_files)} files)"
+                    )
+                else:
+                    done += 1
+                    console.print(
+                        f"  [green]✓[/green] [dim]{i}.[/dim] {item.meta.author} — {item.meta.title}"
+                    )
             else:
                 failed += 1
 
@@ -1015,10 +1033,13 @@ def parse(ctx: click.Context, filename: str) -> None:
 
     # ── Merge sources (same priority as scanner: tags > name > parent)
     merged = merge_meta(tag_meta, name_meta, parent_meta)
+    merged.author = resolve_single_name_author(merged.author, cfg.known_authors)
 
     # Strip author from title if it leaked through from tags.
     if merged.author != "Unknown Author" and merged.title != "Unknown Title":
         merged.title = strip_author_from_title(merged.title, merged.author)
+    if merged.title != "Unknown Title":
+        extract_series_from_title(merged)
 
     # If merged author is obviously wrong, search path ancestors for a
     # clean author name (skip "Author - Title" style components).
@@ -1085,13 +1106,13 @@ def undo(ctx: click.Context, dry_run: bool) -> None:
         console.print("[yellow]Nothing to undo.[/yellow]")
         return
 
-    verb = "Would restore" if dry_run else "Restored"
+    verb = "Would undo" if dry_run else "Undid"
     console.print(f"\n[bold]{verb} {len(actions)} item(s):[/bold]\n")
-    for i, (src, dest) in enumerate(actions, 1):
+    for i, (affected, original) in enumerate(actions, 1):
         console.print(
             f"  [green]↩[/green] [dim]{i:>3}.[/dim]"
-            f" [dim]{src.name}[/dim]"
-            f"  [blue]→[/blue] [green]{dest}[/green]"
+            f" [dim]{affected.name}[/dim]"
+            f"  [blue](original source: {original})[/blue]"
         )
 
     console.print(f"\n[green]{verb} {len(actions)} item(s).[/green]")

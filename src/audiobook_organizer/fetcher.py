@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -98,25 +99,26 @@ def list_loans(settings_folder: Path) -> list[LibbyLoan]:
     settings = _settings_dir(settings_folder)
     odmpy = _odmpy_cmd()
 
-    # Export loans to a temp JSON file
-    loans_file = settings / "loans_export.json"
-    cmd = [
-        *odmpy,
-        "libby",
-        "--settings",
-        str(settings),
-        "--exportloans",
-        str(loans_file),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    if proc.returncode != 0:
-        raise RuntimeError(f"odmpy export failed: {proc.stderr.strip()}")
+    # Keep exported account data in a unique temporary directory and guarantee
+    # cleanup on subprocess, I/O, or JSON parsing failures.
+    with tempfile.TemporaryDirectory(prefix="aborg-loans-", dir=settings) as temp_dir:
+        loans_file = Path(temp_dir) / "loans.json"
+        cmd = [
+            *odmpy,
+            "libby",
+            "--settings",
+            str(settings),
+            "--exportloans",
+            str(loans_file),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0:
+            raise RuntimeError(f"odmpy export failed: {proc.stderr.strip()}")
 
-    if not loans_file.exists():
-        return []
+        if not loans_file.exists():
+            return []
 
-    raw: list[dict[str, Any]] = json.loads(loans_file.read_text())
-    loans_file.unlink(missing_ok=True)
+        raw: list[dict[str, Any]] = json.loads(loans_file.read_text())
 
     results: list[LibbyLoan] = []
     idx = 0

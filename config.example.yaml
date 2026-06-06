@@ -45,12 +45,19 @@ delete_after_extract: false
 # Filename patterns to parse (tried in order, first match wins)
 # Groups: author, title, series, sequence, year, narrator
 filename_patterns:
-  # Author - Series Book 1 - Title (Year) [Narrator]
-  - '(?P<author>.+?) - (?P<series>.+?)\s*(?:Book|Vol\.?|Volume)\s*(?P<sequence>\d+)\s*-\s*(?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*\[(?P<narrator>.+?)\])?$'
-  # Author - Title (Year) [Narrator]
-  - '(?P<author>.+?) - (?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*\[(?P<narrator>.+?)\])?$'
+  # N - Title - Author - Year  (e.g. "2 - Dune - Frank Herbert - 1965")
+  - '(?P<sequence>\d+)\s*-\s*(?P<title>.+)\s*-\s*(?P<author>[^\d]+?)\s*-\s*(?P<year>\d{4})\s*$'
+  # Author - Series Book N - Title (Year) [{Narrator}]  (float sequences like 0.2 supported)
+  - '(?P<author>.+?) - (?P<series>.+?)\s*(?:Book|Vol\.?|Volume)\s*(?P<sequence>\d+(?:\.\d+)?)\s*-\s*(?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*[\[{](?P<narrator>[^\]}]+)[\]}])?$'
+  # Author - Title - Series, Book N [{Narrator}]  (e.g. "Title - Teixcalaan Series, Book 2")
+  - '(?P<author>.+?) - (?P<title>.+?)\s+-\s+(?P<series>.+?),\s*(?:Book|Vol\.?|Volume)\s*(?P<sequence>\d+(?:\.\d+)?)(?:\s*[\[{](?P<narrator>[^\]}]+)[\]}])?$'
+  # Author - Title (Year) [{Narrator}]
+  - '(?P<author>.+?) - (?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*[\[{](?P<narrator>[^\]}]+)[\]}])?$'
   # Title - Author (Year)
   - '(?P<title>.+?) - (?P<author>.+?)(?:\s*\((?P<year>\d{4})\))?$'
+  # Series N Title  (e.g. "The Expanse 01 Leviathan Wakes", "The Expanse 02.5 Gods of Risk")
+  # Requires 2+ words for the series name to avoid false matches like 'The 7 Habits'.
+  - '(?P<series>(?:[^\W\d_]+\s+){2,}?)(?P<sequence>\d+(?:\.\d+)?)\s+(?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*[\[{](?P<narrator>[^\]}]+)[\]}])?$'
   # Author_Title
   - '(?P<author>[^_]+)_(?P<title>.+)$'
 
@@ -64,6 +71,12 @@ min_file_size: 1048576  # 1 MB
 
 # Move log file (for undo support)
 move_log: "~/.aborg/moves.log"
+
+# Optional: map single-word author names (case-insensitive) to their full names.
+# Supplements the built-in table of classical/historical mononyms.
+# known_authors:
+#   "Proust": "Marcel Proust"
+#   "Borges": "Jorge Luis Borges"
 
 # ── Libby / OverDrive integration (requires odmpy) ─────────────────────
 libby:

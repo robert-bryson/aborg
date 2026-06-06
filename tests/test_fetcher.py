@@ -117,6 +117,8 @@ class TestListLoans:
             },
         ]
 
+        export_paths = []
+
         def side_effect(cmd, **kwargs):
             loans_file = None
             for i, arg in enumerate(cmd):
@@ -124,6 +126,7 @@ class TestListLoans:
                     loans_file = Path(cmd[i + 1])
                     break
             if loans_file:
+                export_paths.append(loans_file)
                 loans_file.write_text(json.dumps(loans_data))
             return MagicMock(returncode=0)
 
@@ -136,6 +139,8 @@ class TestListLoans:
         assert loans[0].author == "Test Author"
         assert loans[0].id == "12345"
         assert loans[0].index == 1
+        assert export_paths
+        assert not export_paths[0].parent.exists()
 
 
 class TestDownloadLoan:

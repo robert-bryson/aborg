@@ -17,6 +17,7 @@ from audiobook_organizer.parser import (
     _strip_author_from_name,
     _strip_author_noise,
     _strip_embedded_year,
+    extract_series_from_title,
     flip_author_name,
     is_last_first,
     looks_like_author,
@@ -29,6 +30,7 @@ from audiobook_organizer.parser import (
     parse_metadata_json_from_zip,
     parse_title_folder,
     path_parent_name,
+    resolve_single_name_author,
     split_path_parts,
     strip_author_from_title,
     strip_narrator_from_author,
@@ -124,6 +126,16 @@ class TestParseFilename:
         assert meta.series == "Sword of Truth"
         assert meta.sequence == "2"
         assert meta.title == "Stone of Tears"
+
+    def test_ranked_format_supports_unicode_author(self):
+        meta = parse_filename(
+            "2 - One Hundred Years of Solitude - Gabriel García Márquez - 1967",
+            PATTERNS,
+        )
+        assert meta.author == "Gabriel García Márquez"
+        assert meta.title == "One Hundred Years of Solitude"
+        assert meta.sequence == "2"
+        assert meta.year == "1967"
 
     def test_strips_audiobook_paren_from_pattern_match(self):
         meta = parse_filename("Beverly Gage - G-Man (Pulitzer Prize Winner)", PATTERNS)
@@ -1170,8 +1182,8 @@ class TestParseTitleFolder:
             PATTERNS,
         )
         meta.series = "Sword of Truth"
-        expected = "Terry Goodkind/Sword of Truth/Vol 1 - 1994 - Wizards First Rule"
-        assert str(meta.dest_relative()) == expected
+        expected = Path("Terry Goodkind/Sword of Truth/Vol 1 - 1994 - Wizards First Rule")
+        assert meta.dest_relative() == expected
 
     def test_strips_by_author_and_audiobook_paren(self):
         """Messy download folder: 'Title by Author (Audiobook)' is cleaned."""
@@ -1496,6 +1508,50 @@ class TestDestFolderNameYearDedup:
     def test_normal_case_still_works(self):
         meta = AudiobookMeta(title="Foundation", year="1951")
         assert meta.dest_folder_name() == "1951 - Foundation"
+
+
+class TestResolveSingleNameAuthor:
+    def test_canonical_mononym_is_accent_insensitive(self):
+        assert resolve_single_name_author("MOLIÈRE") == "Molière"
+
+    def test_user_alias_is_case_and_accent_insensitive(self):
+        aliases = {"próust": "Marcel Proust"}
+        assert resolve_single_name_author("PROUST", aliases) == "Marcel Proust"
+
+    def test_ordinary_surname_is_not_guessed(self):
+        assert resolve_single_name_author("Shakespeare") == "Shakespeare"
+
+    def test_full_name_is_unchanged(self):
+        assert resolve_single_name_author("William Shakespeare") == "William Shakespeare"
+
+
+class TestExtractSeriesFromTitle:
+    def test_extracts_suffix_form(self):
+        meta = AudiobookMeta(title="A Desolation Called Peace - Teixcalaan, Book 2")
+        extract_series_from_title(meta)
+        assert meta.title == "A Desolation Called Peace"
+        assert meta.series == "Teixcalaan"
+        assert meta.sequence == "2"
+
+    def test_extracts_decimal_prefix_form(self):
+        meta = AudiobookMeta(title="The Expanse 0.2 The Churn")
+        extract_series_from_title(meta)
+        assert meta.title == "The Churn"
+        assert meta.series == "The Expanse"
+        assert meta.sequence == "0.2"
+
+    def test_extracts_unicode_series_name(self):
+        meta = AudiobookMeta(title="À la recherche 1 Du côté de chez Swann")
+        extract_series_from_title(meta)
+        assert meta.title == "Du côté de chez Swann"
+        assert meta.series == "À la recherche"
+        assert meta.sequence == "1"
+
+    def test_does_not_treat_the_7_habits_as_a_series(self):
+        meta = AudiobookMeta(title="The 7 Habits of Highly Effective People")
+        extract_series_from_title(meta)
+        assert meta.title == "The 7 Habits of Highly Effective People"
+        assert meta.series is None
 
 
 # ── _extract_narrator ────────────────────────────────────────────────────

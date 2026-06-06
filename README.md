@@ -4,13 +4,13 @@ A CLI tool to scan, organize, and manage audiobook file collections. Outputs an 
 
 ## Features
 
-- **Scan** — discover audiobook files (zip archives, `.m4b`, `.mp3`, loose audio folders) across multiple source directories, with accent-aware author deduplication and near-duplicate title warnings
+- **Scan** — discover audiobook files (zip archives, `.m4b`, `.mp3`, loose audio folders, nested download wrappers, and flat multi-album dumps) across multiple source directories, with accent-aware author deduplication and near-duplicate title warnings
 - **Organize** — move or copy files into a clean `Author / [Series] / Title` hierarchy
 - **Fetch** — download audiobook loans from [Libby/OverDrive](https://www.overdrive.com/apps/libby) and optionally auto-organize them
 - **Analyze** — audit an existing collection for issues: duplicates, missing metadata, inconsistent naming, missing cover art, flat files
 - **Parse** — test how a filename will be parsed before running
 - **Rename** — batch-rename existing folders to match Audiobookshelf naming conventions
-- **Undo** — revert the last organize operation via a move log
+- **Undo** — revert the last organize operation via an operation-aware move log, including copies and zip extraction
 - **Dry-run** — every destructive command supports `--dry-run`
 - **Auto-extract** — unzip archives at the destination (with zip-slip protection; rar/7z moved as-is)
 - **Metadata** — reads ID3/audio tags via Mutagen and merges with filename parsing
@@ -112,8 +112,9 @@ Key settings:
 | `auto_extract` | `true` | Extract zip archives at destination (rar/7z are moved as-is) |
 | `delete_after_extract` | `false` | Remove archive after successful extraction |
 | `min_file_size` | `1 MB` | Ignore files smaller than this |
-| `filename_patterns` | 4 built-in | Regex patterns for parsing filenames (tried in order) |
+| `filename_patterns` | 7 built-in | Regex patterns for parsing filenames (tried in order) |
 | `author_name_format` | `last_first` | Author folder format: `last_first` ("Austen, Jane") or `first_last` ("Jane Austen") |
+| `known_authors` | `{}` | Optional case-insensitive aliases for expanding single-name authors, e.g. `Proust: Marcel Proust` |
 | `archive_extensions` | `.zip .rar .7z` | File extensions treated as archives |
 | `audio_extensions` | `.m4b .mp3 .m4a .ogg .opus .flac .wma .aac` | File extensions treated as audio |
 | `companion_extensions` | `.jpg .jpeg .png .pdf .epub .nfo .cue .txt .opf` | Companion files moved alongside audio |
@@ -138,10 +139,20 @@ The tool tries multiple regex patterns against filenames (configurable). Built-i
 
 | Pattern | Example |
 |---------|---------|
+| `N - Title - Author - Year` | `2 - Dune - Frank Herbert - 1965` |
 | `Author - Series Book N - Title (Year) [Narrator]` | `Brandon Sanderson - Mistborn Book 1 - The Final Empire (2006) [Michael Kramer]` |
+| `Author - Title - Series, Book N` | `Arkady Martine - A Desolation Called Peace - Teixcalaan, Book 2` |
 | `Author - Title (Year) [Narrator]` | `Frank Herbert - Dune (1965) [Scott Brick]` |
-| `Title - Author (Year)` | `Dune - Frank Herbert (1965)` |
+| `Series Name N Title` | `The Expanse 02.5 Gods of Risk` |
 | `Author_Title` | `Frank Herbert_Dune` |
+
+The generic two-part form `X - Y` is inherently ambiguous. With the default
+ordering it is interpreted as `Author - Title`. Collections that consistently
+use `Title - Author` should reorder or replace `filename_patterns` explicitly.
+
+Single-word names are not expanded to arbitrary authors by default. Established
+mononyms such as `Molière` are normalized automatically; ambiguous surname
+expansion must be configured through `known_authors`.
 
 Metadata is collected from three sources (highest priority first):
 
@@ -294,7 +305,10 @@ aborg rename [OPTIONS]
 
 ### `undo`
 
-Revert the most recent `org` operation by reading the move log and moving files back to their original locations.
+Revert the most recent `org` operation. Moves are restored to their source,
+copies are removed from the destination, and extracted zip directories are
+removed. If `delete_after_extract` removed the original zip, `undo` rebuilds it
+from the extracted files before removing the destination.
 
 ```
 aborg undo [OPTIONS]

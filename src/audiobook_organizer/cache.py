@@ -11,7 +11,7 @@ from pathlib import Path
 from .parser import AudiobookMeta
 from .scanner import ScanResult
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 DEFAULT_CACHE_PATH = Path("~/.aborg/cache.json").expanduser()
 
 
@@ -33,7 +33,7 @@ class ScanCache:
             raw = json.loads(self.path.read_text())
             if raw.get("version") == CACHE_VERSION:
                 self._entries = raw.get("entries", {})
-        except (json.JSONDecodeError, OSError):
+        except (AttributeError, json.JSONDecodeError, OSError, TypeError):
             self._entries = {}
 
     def save(self) -> None:
@@ -49,7 +49,7 @@ class ScanCache:
 
     # ── lookup / store ───────────────────────────────────────────────
 
-    def get(self, path: Path) -> ScanResult | None:
+    def get(self, path: Path, *, context: str = "") -> ScanResult | None:
         """Return a cached ScanResult if *path* hasn't changed, else None."""
         key = str(path)
         entry = self._entries.get(key)
@@ -57,18 +57,24 @@ class ScanCache:
             return None
 
         fp = _fingerprint(path)
-        if fp is None or fp != entry.get("fp"):
+        if fp is None or fp != entry.get("fp") or context != entry.get("context", ""):
             return None
 
-        return _deserialize(entry["result"])
+        try:
+            return _deserialize(entry["result"])
+        except (KeyError, TypeError, ValueError):
+            del self._entries[key]
+            self._dirty = True
+            return None
 
-    def put(self, path: Path, result: ScanResult) -> None:
+    def put(self, path: Path, result: ScanResult, *, context: str = "") -> None:
         """Store *result* for *path* with the current filesystem fingerprint."""
         fp = _fingerprint(path)
         if fp is None:
             return
         self._entries[str(path)] = {
             "fp": fp,
+            "context": context,
             "result": _serialize(result),
         }
         self._dirty = True
@@ -140,6 +146,7 @@ def _serialize(result: ScanResult) -> dict:
         "size": result.size,
         "has_cover": result.has_cover,
         "file_count": result.file_count,
+        "source_files": [str(path) for path in result.source_files],
     }
     if result.tag_meta is not None:
         tm = asdict(result.tag_meta)
@@ -169,4 +176,5 @@ def _deserialize(data: dict) -> ScanResult:
         has_cover=data.get("has_cover", False),
         file_count=data.get("file_count", 0),
         tag_meta=tag_meta,
+        source_files=tuple(Path(path) for path in data.get("source_files", [])),
     )

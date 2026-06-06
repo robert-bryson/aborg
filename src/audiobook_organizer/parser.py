@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import unicodedata
 import zipfile
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -59,6 +60,131 @@ _AUTHOR_NOISE_PAREN_RE = re.compile(
     r"\s*\((?:audio|narrator|reader|abridged|unabridged)\)\s*",
     re.IGNORECASE,
 )
+
+# Canonical spellings for established mononyms and pen names.
+#
+# Do not add ordinary surnames here: silently turning an ambiguous surname into
+# a specific person corrupts metadata. Users can opt into those mappings through
+# Config.known_authors instead.
+KNOWN_SINGLE_NAME_AUTHORS: dict[str, str] = {
+    "moliere": "Molière",
+    "voltaire": "Voltaire",
+    "aeschylus": "Aeschylus",
+    "aristophanes": "Aristophanes",
+    "aristotle": "Aristotle",
+    "cicero": "Cicero",
+    "colette": "Colette",
+    "confucius": "Confucius",
+    "dante": "Dante Alighieri",
+    "epictetus": "Epictetus",
+    "euripides": "Euripides",
+    "hafiz": "Hafiz",
+    "herodotus": "Herodotus",
+    "homer": "Homer",
+    "horace": "Horace",
+    "juvenal": "Juvenal",
+    "livy": "Livy",
+    "lucretius": "Lucretius",
+    "ovid": "Ovid",
+    "plato": "Plato",
+    "plutarch": "Plutarch",
+    "rumi": "Rumi",
+    "seneca": "Seneca",
+    "socrates": "Socrates",
+    "sophocles": "Sophocles",
+    "stendhal": "Stendhal",
+    "tacitus": "Tacitus",
+    "thucydides": "Thucydides",
+    "virgil": "Virgil",
+    "xenophon": "Xenophon",
+}
+
+
+def _author_lookup_key(name: str) -> str:
+    """Return a case- and accent-insensitive lookup key for an author alias."""
+    value = name.strip().casefold()
+    folded = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
+    return folded or value
+
+
+def resolve_single_name_author(name: str, extra: dict[str, str] | None = None) -> str:
+    """Expand a single-word author name to its full form.
+
+    Checks *extra* (from ``Config.known_authors``) first, then the built-in
+    ``KNOWN_SINGLE_NAME_AUTHORS`` table.  Returns *name* unchanged when the
+    name already contains a space or comma, or when no match is found.
+    """
+    cleaned = name.strip()
+    if not cleaned or len(cleaned.split()) != 1 or "," in cleaned:
+        return name
+    key = _author_lookup_key(cleaned)
+    if extra:
+        for alias, resolved in extra.items():
+            if _author_lookup_key(alias) == key and resolved.strip():
+                return resolved.strip()
+    return KNOWN_SINGLE_NAME_AUTHORS.get(key, cleaned)
+
+
+# Matches a trailing "Title - Series Name, Book N" in a title string.
+# Used to promote series information embedded in audio tags or folder names
+# into proper series/sequence metadata fields.
+_SERIES_SUFFIX_RE = re.compile(
+    r"^(.+?)\s+-\s+(.+?),\s*(?:Book|Vol\.?|Volume)\s*(\d+(?:\.\d+)?)\s*$",
+    re.IGNORECASE,
+)
+
+# Matches a leading "Series Name N Title" in a title string.
+# Requires 2+ words for the series name to avoid false matches like "The 7 Habits".
+_SERIES_NUM_TITLE_RE = re.compile(
+    r"^(?P<series>(?:[^\W\d_]+\s+){2,}?)(?P<sequence>\d+(?:\.\d+)?)\s+(?P<title>.+)$",
+    re.IGNORECASE,
+)
+
+
+def extract_series_from_title(meta: AudiobookMeta) -> AudiobookMeta:
+    """Extract series/sequence embedded in *meta.title* when series is unknown.
+
+    Handles two formats:
+      * ``"Title - Series Name, Book N"`` (suffix form from audio tags/folder names)
+      * ``"Series Name N Title"`` (prefix form, e.g. album tag = "The Expanse 0.2 The Churn")
+
+    When series is already set, still tries to clean a redundant series prefix from
+    the title (e.g. title="The Expanse 0.2 The Churn" + series="The Expanse" + seq="0.2"
+    → title="The Churn").
+
+    Modifies *meta* in place and returns it.
+    """
+    if not meta.title or meta.title == "Unknown Title":
+        return meta
+    if not meta.series:
+        # Try "Title - Series, Book N" suffix form
+        m = _SERIES_SUFFIX_RE.match(meta.title)
+        if m:
+            meta.title = m.group(1).strip()
+            meta.series = m.group(2).strip()
+            if not meta.sequence:
+                meta.sequence = m.group(3).strip()
+            return meta
+        # Try "Series N Title" prefix form
+        m = _SERIES_NUM_TITLE_RE.match(meta.title)
+        if m:
+            meta.title = m.group("title").strip()
+            meta.series = m.group("series").strip()
+            if not meta.sequence:
+                meta.sequence = m.group("sequence").strip()
+    else:
+        # Series already set — clean a redundant "Series Seq" prefix from the title
+        # (happens when an album tag encodes the full "The Expanse 0.2 The Churn"
+        # but the folder-name pattern already gave us series/seq).
+        if meta.sequence:
+            m = _SERIES_NUM_TITLE_RE.match(meta.title)
+            if (
+                m
+                and m.group("series").strip().lower() == meta.series.lower()
+                and m.group("sequence").strip() == meta.sequence.strip()
+            ):
+                meta.title = m.group("title").strip()
+    return meta
 
 
 def _is_copyright_notice(text: str) -> bool:
@@ -314,13 +440,18 @@ def parse_filename(name: str, patterns: list[str] | None = None) -> AudiobookMet
         if m:
             g = m.groupdict()
             raw_title = g.get("title", "").strip() or "Unknown Title"
+            narrator = (g.get("narrator") or "").strip() or None
+            # Extract narrator from {braces} or [brackets] left in the title
+            # when older/custom patterns don't have the narrator capture group.
+            if not narrator:
+                narrator, raw_title = _extract_narrator(raw_title)
             return AudiobookMeta(
                 author=g.get("author", "").strip() or "Unknown Author",
                 title=_NOISE_PAREN_RE.sub("", raw_title).strip() or raw_title,
                 series=(g.get("series") or "").strip() or None,
                 sequence=(g.get("sequence") or "").strip() or None,
                 year=(g.get("year") or "").strip() or None,
-                narrator=(g.get("narrator") or "").strip() or None,
+                narrator=narrator,
             )
     # Fallback: use the whole name as the title
     title = _NOISE_PAREN_RE.sub("", name).strip() or "Unknown Title"
