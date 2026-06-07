@@ -628,6 +628,21 @@ class TestCheckDir:
         assert results[0].has_cover is False
         assert results[0].file_count == 1
 
+    def test_directory_title_beats_first_track_part_title(self, tmp_path):
+        src = tmp_path / "downloads"
+        book = src / "Mayflower"
+        audio = book / "Mayflower-Part01.mp3"
+        _make_audio_file(audio)
+
+        cfg = make_cfg(source_dirs=[src])
+        tag_meta = AudiobookMeta(author="Nathaniel Philbrick", title="Mayflower - Part 01")
+        with patch("audiobook_organizer.scanner.parse_audio_tags", return_value=tag_meta):
+            results, _ = scan_sources(cfg)
+
+        assert len(results) == 1
+        assert results[0].meta.author == "Nathaniel Philbrick"
+        assert results[0].meta.title == "Mayflower"
+
 
 class TestScanSourcesCallbacks:
     """Tests for scan_sources callback and edge case behavior."""

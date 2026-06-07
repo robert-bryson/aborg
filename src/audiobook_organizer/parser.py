@@ -190,7 +190,8 @@ def extract_series_from_title(meta: AudiobookMeta) -> AudiobookMeta:
 def _is_copyright_notice(text: str) -> bool:
     """Return True if *text* looks like a copyright/production notice."""
     t = html.unescape(text).strip()
-    return bool(_COPYRIGHT_RE.match(t))
+    low = t.casefold()
+    return bool(_COPYRIGHT_RE.match(t)) or "©" in t or "(p)" in low or "original material" in low
 
 
 def _strip_author_noise(name: str) -> str:
@@ -804,14 +805,15 @@ def parse_audio_tags(path: Path) -> AudiobookMeta:
             for person in artist_people
             if _normalize_to_first_last(person) not in author_keys
         ]
-        if extra_people:
-            meta.narrator = extra_people[-1]
+        if len(extra_people) == 1:
+            meta.narrator = extra_people[0]
     elif artist_people:
-        if artist_raw and "/" in artist_raw and len(artist_people) > 1:
-            # OverDrive-style artist tags encode Authors/Narrator. Preserve all
-            # contributors before the final person as co-authors.
-            meta.author = ", ".join(artist_people[:-1])
-            meta.narrator = artist_people[-1]
+        if artist_raw and "/" in artist_raw:
+            # OverDrive-style artist tags flatten mixed roles without labels.
+            # Avoid inventing co-authors from narrators/translators.
+            meta.author = artist_people[0]
+            if len(artist_people) == 2:
+                meta.narrator = artist_people[1]
         else:
             meta.author = ", ".join(artist_people)
 
@@ -871,9 +873,31 @@ _TAG_PLACEHOLDERS = frozenset(
 def _clean_tag_value(value: object) -> str | None:
     """Return a useful decoded tag value, ignoring common placeholders."""
     cleaned = html.unescape(str(value)).strip()
+    cleaned = _repair_cp1252_controls(cleaned)
     if not cleaned or cleaned.casefold() in _TAG_PLACEHOLDERS:
         return None
     return cleaned
+
+
+_CP1252_CONTROL_REPLACEMENTS = str.maketrans(
+    {
+        "\x91": "'",
+        "\x92": "'",
+        "\x93": '"',
+        "\x94": '"',
+        "\x96": " - ",
+        "\x97": " - ",
+        "\x85": "...",
+    }
+)
+
+
+def _repair_cp1252_controls(value: str) -> str:
+    """Repair common CP-1252 punctuation decoded as C1 control characters."""
+    repaired = value.translate(_CP1252_CONTROL_REPLACEMENTS)
+    repaired = re.sub(r"\s{2,}", " ", repaired)
+    repaired = re.sub(r"\s+-\s+", " - ", repaired)
+    return repaired.strip()
 
 
 def _tag_people(raw: str | None) -> list[str]:

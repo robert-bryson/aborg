@@ -10,6 +10,7 @@ from audiobook_organizer.parser import (
     _MAX_FOLDER_NAME,
     AudiobookMeta,
     _clean_tag_title,
+    _clean_tag_value,
     _dedup_author_names,
     _extract_narrator,
     _is_copyright_notice,
@@ -524,6 +525,11 @@ class TestCleanTagTitle:
     def test_strips_unabridged_paren(self):
         assert _clean_tag_title("Dune (Unabridged)") == "Dune"
 
+    def test_repairs_cp1252_em_dash_controls(self):
+        value = _clean_tag_value("How to Run\x97or Ruin\x97an Economy")
+
+        assert value == "How to Run - or Ruin - an Economy"
+
 
 # ── parse_audio_tags (with mocked Mutagen) ───────────────────────────────
 
@@ -616,7 +622,9 @@ class TestParseAudioTags:
 
     @patch("audiobook_organizer.parser._read_translator")
     @patch("audiobook_organizer.parser.MutagenFile")
-    def test_slash_separated_coauthors_and_narrator(self, mock_mutagen, mock_translator):
+    def test_unlabeled_slash_contributors_do_not_become_coauthors(
+        self, mock_mutagen, mock_translator
+    ):
         mock_translator.return_value = None
         mock_mutagen.return_value = self._mock_tags(
             {
@@ -627,8 +635,42 @@ class TestParseAudioTags:
 
         meta = parse_audio_tags(Path("/fake/audio.mp3"))
 
-        assert meta.author == "Robert D. Putnam, David E. Campbell"
-        assert meta.narrator == "Dan John Miller"
+        assert meta.author == "Robert D. Putnam"
+        assert meta.narrator is None
+
+    @patch("audiobook_organizer.parser._read_translator")
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_translated_audiobook_uses_first_reader_not_translator(
+        self, mock_mutagen, mock_translator
+    ):
+        mock_translator.return_value = None
+        mock_mutagen.return_value = self._mock_tags(
+            {
+                "artist": "Cixin Liu/Feodor Chin/Joel Martinsen",
+                "album": "Ball Lightning",
+            }
+        )
+
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+
+        assert meta.author == "Cixin Liu"
+        assert meta.narrator is None
+
+    @patch("audiobook_organizer.parser._read_translator")
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_multiple_readers_do_not_become_coauthors(self, mock_mutagen, mock_translator):
+        mock_translator.return_value = None
+        mock_mutagen.return_value = self._mock_tags(
+            {
+                "artist": "Roberto Bolaño/Alberto Santillán/Angelines Santana/Yareli Arizmendi",
+                "album": "Los detectives salvajes",
+            }
+        )
+
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+
+        assert meta.author == "Roberto Bolaño"
+        assert meta.narrator is None
 
     @patch("audiobook_organizer.parser.MutagenFile")
     def test_placeholder_title_is_ignored(self, mock_mutagen):
@@ -718,6 +760,24 @@ class TestParseAudioTags:
         meta = parse_audio_tags(Path("/fake/audio.mp3"))
         assert "\u2013" in meta.title  # en-dash
         assert "&#" not in meta.title
+
+    @patch("audiobook_organizer.parser._read_translator")
+    @patch("audiobook_organizer.parser.MutagenFile")
+    def test_copyright_prose_is_not_a_person(self, mock_mutagen, mock_translator):
+        mock_translator.return_value = None
+        mock_mutagen.return_value = self._mock_tags(
+            {
+                "artist": (
+                    "Amy S. Greenberg/Caroline Shaffer/Original material &#169; 2012 Amy Greenberg."
+                ),
+                "album": "A Wicked War",
+            }
+        )
+
+        meta = parse_audio_tags(Path("/fake/audio.mp3"))
+
+        assert meta.author == "Amy S. Greenberg"
+        assert meta.narrator == "Caroline Shaffer"
 
     @patch("audiobook_organizer.parser._read_translator")
     @patch("audiobook_organizer.parser.MutagenFile")

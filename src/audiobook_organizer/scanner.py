@@ -63,6 +63,10 @@ _DUP_SUFFIX_RE = re.compile(r"\s*\(\d+\)$")
 # Subdirectory names that indicate disc/part splits of a single multi-disc audiobook
 # (not a series container directory where each subdir is a separate book).
 _DISC_DIR_RE = re.compile(r"^(?:disc|disk|cd|part|track|side)\s*\d+$", re.IGNORECASE)
+_TRACK_PART_SUFFIX_RE = re.compile(
+    r"^\s*[-\u2013\u2014:]\s*(?:part|chapter|track|disc|disk|cd)\s*\d+\b.*$",
+    re.IGNORECASE,
+)
 
 
 def fold_accents(s: str) -> str:
@@ -451,6 +455,7 @@ def _check_dir(path: Path, cfg: Config) -> ScanResult | None:
     # Try to get metadata from the directory name first, then first audio file
     dir_meta = parse_filename(path.name, cfg.filename_patterns)
     first_audio_meta = parse_audio_tags(audio_files[0]) if audio_files else AudiobookMeta()
+    _discard_redundant_track_title(first_audio_meta, dir_meta)
     json_meta = parse_metadata_json(path)
     if json_meta:
         meta = merge_meta(json_meta, first_audio_meta, dir_meta)
@@ -545,6 +550,19 @@ def _read_album_name(path: Path) -> str | None:
         return None
     album = str(values[0]).strip()
     return album or None
+
+
+def _discard_redundant_track_title(tag_meta: AudiobookMeta, dir_meta: AudiobookMeta) -> None:
+    """Ignore first-track titles such as ``Book - Part 01`` when the dir has the book title."""
+    if dir_meta.title == "Unknown Title" or tag_meta.title == "Unknown Title":
+        return
+    if tag_meta.title.casefold() == dir_meta.title.casefold():
+        return
+    if not tag_meta.title.casefold().startswith(dir_meta.title.casefold()):
+        return
+    suffix = tag_meta.title[len(dir_meta.title) :]
+    if _TRACK_PART_SUFFIX_RE.match(suffix):
+        tag_meta.title = "Unknown Title"
 
 
 def scan_collection(
@@ -763,6 +781,7 @@ def _build_scan_result(
 
     if read_tags and info.audio_files:
         tag_meta = parse_audio_tags(Path(info.audio_files[0][0]))
+        _discard_redundant_track_title(tag_meta, dir_meta)
     else:
         tag_meta = None
 

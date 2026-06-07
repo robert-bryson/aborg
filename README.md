@@ -157,7 +157,7 @@ expansion must be configured through `known_authors`.
 Metadata is collected from three sources (highest priority first):
 
 1. **Sidecar JSON** — `metadata/metadata.json` inside an audiobook directory or zip archive (creator roles: `aut`, `nrt`, `trl`)
-2. **Audio tags** — ID3/Mutagen tags (artist, album, composer, series, narrator, etc.). Slash-separated contributor fields (e.g. `Author/Co-author/Narrator/(c) Publisher`) are split and cleaned automatically. Copyright notices, placeholder values such as `Unknown`, HTML entities, and noise qualifiers like "(audio)" are ignored. When a tag date conflicts with a year explicitly repeated at the end of the selected title, the explicit title year wins.
+2. **Audio tags** — ID3/Mutagen tags (artist, album, composer, series, narrator, etc.). Dedicated `albumartist` values may supply multiple authors. Unlabeled slash-separated `artist` values are handled conservatively: two people are treated as `Author/Narrator`, while lists of three or more keep only the first author because co-author, narrator, and translator roles cannot be distinguished safely. Copyright notices, placeholder values such as `Unknown`, malformed Windows-1252 punctuation, HTML entities, and noise qualifiers like "(audio)" are cleaned or ignored. When a tag date conflicts with a year explicitly repeated at the end of the selected title, the explicit title year wins.
 3. **Filename** — parsed against the configured regex patterns
 
 ## Commands
