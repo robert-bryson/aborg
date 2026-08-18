@@ -412,6 +412,11 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, cache: bo
 @click.option("--copy", is_flag=True, help="Copy instead of move.")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt.")
 @click.option("--cache", is_flag=True, help="Use cached results from previous scans.")
+@click.option(
+    "--clean-exists",
+    is_flag=True,
+    help="Delete source files/dirs that are already in the collection.",
+)
 @click.pass_context
 def org(
     ctx: click.Context,
@@ -421,6 +426,7 @@ def org(
     copy: bool,
     yes: bool,
     cache: bool,
+    clean_exists: bool,
 ) -> None:
     """Scan source directories and organize audiobooks into the destination."""
     cfg = _require_cfg(ctx)
@@ -446,6 +452,9 @@ def org(
 
     prefix = "DRY RUN — " if dry_run else ""
     prompt = f"\n{prefix}Organize {counters.new_count} new item(s)?"
+    if not dry_run and not yes and counters.new_count == 0 and not clean_exists:
+        console.print("[yellow]Nothing new to organize.[/yellow]")
+        return
     if not dry_run and not yes and not click.confirm(prompt):
         console.print("[yellow]Aborted.[/yellow]")
         return
@@ -528,8 +537,20 @@ def org(
         summary.add_row("Missing source dirs", f"[red]{len(missing_dirs)}[/red]")
     console.print(summary)
 
+    if dry_run and clean_exists and exist_sources:
+        console.print()
+        console.print("[bold]Would delete EXISTS source(s):[/bold]")
+        for p in sorted(set(exist_sources), key=lambda x: len(x.parts), reverse=True):
+            console.print(f"  [dim]•[/dim] [red]{p}[/red]")
+
     if not dry_run and (moved_sources or exist_sources):
-        _offer_source_cleanup(moved_sources, cfg, copy=copy, exist_sources=exist_sources)
+        _offer_source_cleanup(
+            moved_sources,
+            cfg,
+            copy=copy,
+            exist_sources=exist_sources,
+            auto_clean_exists=clean_exists,
+        )
 
 
 def _offer_source_cleanup(
@@ -538,15 +559,39 @@ def _offer_source_cleanup(
     *,
     copy: bool,
     exist_sources: list[Path] | None = None,
+    auto_clean_exists: bool = False,
 ) -> None:
     """After organizing, offer to clean up source paths."""
     cleanup_paths: list[Path] = []
     source_dir_resolved = {sd.resolve() for sd in cfg.source_dirs}
 
     # Sources whose destination already existed — safe to remove
+    exists_cleanup: list[Path] = []
     for src in exist_sources or []:
         if src.exists():
-            cleanup_paths.append(src)
+            exists_cleanup.append(src)
+
+    if auto_clean_exists and exists_cleanup:
+        # Automatically remove EXISTS sources without prompting
+        exists_cleanup.sort(key=lambda p: len(p.parts), reverse=True)
+        console.print("\n[bold]Deleting EXISTS source(s):[/bold]")
+        removed = 0
+        for p in exists_cleanup:
+            try:
+                if p.is_symlink():
+                    console.print(f"  [yellow]skip symlink:[/yellow] {p}")
+                    continue
+                if p.is_dir():
+                    shutil.rmtree(p)
+                elif p.is_file():
+                    p.unlink()
+                removed += 1
+                console.print(f"  [red]✗[/red] {p}")
+            except OSError as exc:
+                console.print(f"  [red]Error:[/red] {p}: {exc}")
+        console.print(f"[green]Cleaned up {removed} path(s).[/green]")
+    else:
+        cleanup_paths.extend(exists_cleanup)
 
     if copy:
         # For copies, offer to delete the originals
@@ -964,9 +1009,10 @@ def analyze(
         if action.kind == "remove_dir":
             console.print(f"  {icon} Remove empty directory: [dim]{action.source}[/dim]{reason}")
         elif action.kind == "rename":
+            target_label = action.target.name if action.target else "?"
             console.print(
                 f"  {icon} Rename: [dim]{action.source.name}[/dim]"
-                f" [blue]\u2192[/blue] [green]{action.target.name}[/green]{reason}"
+                f" [blue]\u2192[/blue] [green]{target_label}[/green]{reason}"
             )
 
     applied = apply_fixes(report, dry_run=dry_run, on_fix=_on_fix)

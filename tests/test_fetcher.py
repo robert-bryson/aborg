@@ -258,3 +258,59 @@ class TestCLIFetch:
             or "No action specified" in result.output
             or "No Libby" in result.output
         )
+
+
+class TestListLoansEdgeCases:
+    @patch("audiobook_organizer.fetcher._odmpy_cmd", return_value=["odmpy"])
+    @patch("audiobook_organizer.fetcher.subprocess.run")
+    def test_non_list_json_returns_empty(self, mock_run, mock_cmd, tmp_path):
+        """Malformed loans JSON (not a list) should return an empty list."""
+
+        def side_effect(cmd, **kwargs):
+            for i, arg in enumerate(cmd):
+                if arg == "--exportloans" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).write_text('{"error": "unexpected"}')
+                    break
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = side_effect
+        loans = list_loans(tmp_path)
+        assert loans == []
+
+    @patch("audiobook_organizer.fetcher._odmpy_cmd", return_value=["odmpy"])
+    @patch("audiobook_organizer.fetcher.subprocess.run")
+    def test_non_dict_entries_skipped(self, mock_run, mock_cmd, tmp_path):
+        """Non-dict entries in the loans JSON list are skipped without error."""
+
+        def side_effect(cmd, **kwargs):
+            for i, arg in enumerate(cmd):
+                if arg == "--exportloans" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).write_text(
+                        '[null, 42, "string", {"id": 1, "title": "Real Book", '
+                        '"firstCreatorName": "Author", "formats": [{"id": "audiobook-mp3"}]}]'
+                    )
+                    break
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = side_effect
+        loans = list_loans(tmp_path)
+        assert len(loans) == 1
+        assert loans[0].title == "Real Book"
+
+    @patch("audiobook_organizer.fetcher._odmpy_cmd", return_value=["odmpy"])
+    @patch("audiobook_organizer.fetcher.subprocess.run")
+    def test_subprocess_failure_raises(self, mock_run, mock_cmd, tmp_path):
+        """odmpy export failure should raise RuntimeError."""
+        mock_run.return_value = MagicMock(returncode=1, stderr="connection refused", stdout="")
+        import pytest
+
+        with pytest.raises(RuntimeError, match="odmpy export failed"):
+            list_loans(tmp_path)
+
+    @patch("audiobook_organizer.fetcher._odmpy_cmd", return_value=["odmpy"])
+    @patch("audiobook_organizer.fetcher.subprocess.run")
+    def test_missing_export_file_returns_empty(self, mock_run, mock_cmd, tmp_path):
+        """If odmpy succeeds but writes no file, return an empty list."""
+        mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
+        loans = list_loans(tmp_path)
+        assert loans == []

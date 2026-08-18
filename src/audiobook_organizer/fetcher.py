@@ -8,7 +8,6 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 
 @dataclass
@@ -118,11 +117,16 @@ def list_loans(settings_folder: Path) -> list[LibbyLoan]:
         if not loans_file.exists():
             return []
 
-        raw: list[dict[str, Any]] = json.loads(loans_file.read_text())
+        raw = json.loads(loans_file.read_text())
+
+    if not isinstance(raw, list):
+        return []
 
     results: list[LibbyLoan] = []
     idx = 0
     for entry in raw:
+        if not isinstance(entry, dict):
+            continue
         # Only include audiobook loans that can be downloaded
         formats = [f.get("id", "") for f in entry.get("formats", [])]
         if "audiobook-mp3" not in formats:

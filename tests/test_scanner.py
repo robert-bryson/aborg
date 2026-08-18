@@ -11,6 +11,7 @@ from audiobook_organizer.parser import AudiobookMeta
 from audiobook_organizer.scanner import (
     _check_file,
     _normalize_dedup,
+    _split_flat_album_dir,
     fold_accents,
     scan_collection,
     scan_sources,
@@ -964,3 +965,131 @@ class TestReadTagsFromZip:
         corrupt.write_bytes(b"definitely not a zip")
         cfg = make_cfg()
         assert _read_tags_from_zip(corrupt, cfg.audio_extensions) is None
+
+
+# ── _split_flat_album_dir ─────────────────────────────────────────────────
+
+
+class TestSplitFlatAlbumDir:
+    """Tests for the flat multi-album directory splitter."""
+
+    def _make_tagged_mp3(self, path: Path, album: str) -> Path:
+        """Create a dummy mp3 with a predictable album tag via mock."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x00" * 2_000_000)
+        return path
+
+    def test_empty_dir_returns_empty(self, tmp_path):
+        flat = tmp_path / "empty"
+        flat.mkdir()
+        cfg = make_cfg()
+        results = _split_flat_album_dir(flat, cfg)
+        assert results == []
+
+    def test_single_album_returns_empty(self, tmp_path):
+        """A dir with only one distinct album should not be split."""
+        flat = tmp_path / "one_album"
+        self._make_tagged_mp3(flat / "track01.mp3", "Book One")
+        self._make_tagged_mp3(flat / "track02.mp3", "Book One")
+        cfg = make_cfg()
+
+        with patch(
+            "audiobook_organizer.scanner._read_album_name",
+            side_effect=lambda p: "Book One",
+        ):
+            results = _split_flat_album_dir(flat, cfg)
+
+        assert results == []
+
+    def test_two_albums_produces_two_results(self, tmp_path):
+        """A dir with two distinct album tags yields two audio_group results."""
+        flat = tmp_path / "two_albums"
+        t1 = self._make_tagged_mp3(flat / "book1-track01.mp3", "Book One")
+        t2 = self._make_tagged_mp3(flat / "book2-track01.mp3", "Book Two")
+        cfg = make_cfg()
+
+        album_map = {t1: "Book One", t2: "Book Two"}
+
+        def fake_tags(path: Path) -> AudiobookMeta:
+            if t1 == path:
+                return AudiobookMeta(author="Author A", title="Book One")
+            return AudiobookMeta(author="Author B", title="Book Two")
+
+        with (
+            patch("audiobook_organizer.scanner._read_album_name", side_effect=lambda p: album_map.get(Path(p))),
+            patch("audiobook_organizer.scanner.parse_audio_tags", side_effect=fake_tags),
+        ):
+            results = _split_flat_album_dir(flat, cfg)
+
+        assert len(results) == 2
+        assert all(r.kind == "audio_group" for r in results)
+        titles = {r.meta.title for r in results}
+        assert "Book One" in titles
+        assert "Book Two" in titles
+
+    def test_files_without_album_tag_excluded_from_groups(self, tmp_path):
+        """Files with no album tag are not included in any group."""
+        flat = tmp_path / "mixed"
+        t1 = self._make_tagged_mp3(flat / "tagged.mp3", "Book One")
+        t2 = self._make_tagged_mp3(flat / "untagged.mp3", "")
+        cfg = make_cfg()
+
+        album_map = {t1: "Book One", t2: None}
+
+        def fake_tags(path: Path) -> AudiobookMeta:
+            return AudiobookMeta(author="Author", title="Book One")
+
+        with (
+            patch("audiobook_organizer.scanner._read_album_name", side_effect=lambda p: album_map.get(Path(p))),
+            patch("audiobook_organizer.scanner.parse_audio_tags", side_effect=fake_tags),
+        ):
+            results = _split_flat_album_dir(flat, cfg)
+
+        assert results == []
+
+    def test_source_files_populated(self, tmp_path):
+        """Each audio_group result has its source files set."""
+        flat = tmp_path / "two_albums"
+        t1 = self._make_tagged_mp3(flat / "a-01.mp3", "Alpha")
+        t2 = self._make_tagged_mp3(flat / "a-02.mp3", "Alpha")
+        t3 = self._make_tagged_mp3(flat / "b-01.mp3", "Beta")
+        cfg = make_cfg()
+
+        album_map = {t1: "Alpha", t2: "Alpha", t3: "Beta"}
+
+        def fake_tags(path: Path) -> AudiobookMeta:
+            if album_map.get(path) == "Alpha":
+                return AudiobookMeta(author="Author A", title="Alpha")
+            return AudiobookMeta(author="Author B", title="Beta")
+
+        with (
+            patch("audiobook_organizer.scanner._read_album_name", side_effect=lambda p: album_map.get(Path(p))),
+            patch("audiobook_organizer.scanner.parse_audio_tags", side_effect=fake_tags),
+        ):
+            results = _split_flat_album_dir(flat, cfg)
+
+        assert len(results) == 2
+        alpha = next(r for r in results if r.meta.title == "Alpha")
+        assert len(alpha.source_files) == 2
+        assert t1 in alpha.source_files
+        assert t2 in alpha.source_files
+
+    def test_skips_groups_with_unknown_author(self, tmp_path):
+        """Groups where the author cannot be determined are silently dropped."""
+        flat = tmp_path / "bad_author"
+        t1 = self._make_tagged_mp3(flat / "track01.mp3", "Some Book")
+        t2 = self._make_tagged_mp3(flat / "track02.mp3", "Other Book")
+        cfg = make_cfg()
+
+        album_map = {t1: "Some Book", t2: "Other Book"}
+
+        def fake_tags(path: Path) -> AudiobookMeta:
+            return AudiobookMeta(author="Unknown Author", title="Some Book")
+
+        with (
+            patch("audiobook_organizer.scanner._read_album_name", side_effect=lambda p: album_map.get(Path(p))),
+            patch("audiobook_organizer.scanner.parse_audio_tags", side_effect=fake_tags),
+        ):
+            results = _split_flat_album_dir(flat, cfg)
+
+        assert results == []

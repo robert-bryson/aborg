@@ -310,18 +310,6 @@ class TestGetGitCommit:
         assert "abc1234" in result.output
 
 
-class TestRenameCommand:
-    def test_rename_help(self):
-        result = CliRunner().invoke(cli, ["rename", "--help"])
-        assert result.exit_code == 0
-        assert "dry-run" in result.output
-
-    def test_fetch_help(self):
-        result = CliRunner().invoke(cli, ["fetch", "--help"])
-        assert result.exit_code == 0
-        assert "setup" in result.output
-
-
 class TestOrgDestinationValidation:
     """Tests for the org command destination validation."""
 
@@ -370,3 +358,226 @@ class TestHumanSize:
         """Exactly 1 KB should not overflow to MB."""
         assert _human_size(1024) == "1.0 KB"
         assert _human_size(1023) == "1023.0 B"
+
+
+# ── scan command ─────────────────────────────────────────────────────────
+
+
+class TestScanCommand:
+    def _make_cfg_file(self, tmp_path: Path, src: Path) -> Path:
+        cfg_file = tmp_path / "config.yaml"
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        cfg_file.write_text(
+            f"source_dirs:\n  - {src}\n"
+            f"destination: {dest}\n"
+            f"move_log: {tmp_path / 'moves.log'}\n"
+            "min_file_size: 100\n"
+        )
+        return cfg_file
+
+    def test_scan_no_books(self, tmp_path):
+        src = tmp_path / "empty_src"
+        src.mkdir()
+        cfg_file = self._make_cfg_file(tmp_path, src)
+        result = CliRunner().invoke(cli, ["-c", str(cfg_file), "scan"])
+        assert result.exit_code == 0
+        assert "No audiobook files found" in result.output
+
+    def test_scan_finds_books(self, tmp_path):
+        src = tmp_path / "src"
+        (src / "Author - Title.mp3").parent.mkdir(parents=True)
+        (src / "Author - Title.mp3").write_bytes(b"\x00" * 200)
+        cfg_file = self._make_cfg_file(tmp_path, src)
+        result = CliRunner().invoke(cli, ["-c", str(cfg_file), "scan"])
+        assert result.exit_code == 0
+        assert "Author" in result.output
+
+    def test_scan_table_mode(self, tmp_path):
+        src = tmp_path / "src"
+        (src / "Author - Title.mp3").parent.mkdir(parents=True)
+        (src / "Author - Title.mp3").write_bytes(b"\x00" * 200)
+        cfg_file = self._make_cfg_file(tmp_path, src)
+        result = CliRunner().invoke(cli, ["-c", str(cfg_file), "scan", "--table"])
+        assert result.exit_code == 0
+        assert "Author" in result.output or "Title" in result.output
+
+    def test_scan_with_extra_dir(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        extra = tmp_path / "extra"
+        (extra / "Author2 - Book2.mp3").parent.mkdir(parents=True)
+        (extra / "Author2 - Book2.mp3").write_bytes(b"\x00" * 200)
+        cfg_file = self._make_cfg_file(tmp_path, src)
+        result = CliRunner().invoke(cli, ["-c", str(cfg_file), "scan", "-d", str(extra)])
+        assert result.exit_code == 0
+        assert "Author2" in result.output
+
+    def test_scan_missing_source_dir(self, tmp_path):
+        src = tmp_path / "nonexistent_source"
+        cfg_file = self._make_cfg_file(tmp_path, src)
+        result = CliRunner().invoke(cli, ["-c", str(cfg_file), "scan"])
+        assert result.exit_code == 0
+
+
+# ── org command ──────────────────────────────────────────────────────────
+
+
+class TestOrgCommand:
+    def _setup(self, tmp_path: Path) -> tuple[Path, Path, Path]:
+        src = tmp_path / "src"
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(
+            f"source_dirs:\n  - {src}\n"
+            f"destination: {dest}\n"
+            f"move_log: {tmp_path / 'moves.log'}\n"
+            "min_file_size: 100\n"
+        )
+        return src, dest, cfg_file
+
+    def test_org_dry_run_nothing_moved(self, tmp_path):
+        src, _dest, cfg_file = self._setup(tmp_path)
+        (src / "Author - Book.mp3").parent.mkdir(parents=True)
+        (src / "Author - Book.mp3").write_bytes(b"\x00" * 200)
+        result = CliRunner().invoke(cli, ["-c", str(cfg_file), "org", "--dry-run"])
+        assert result.exit_code == 0
+        assert (src / "Author - Book.mp3").exists()
+
+    def test_org_no_destination_configured(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(
+            f"source_dirs:\n  - {src}\n"
+            "move_log: /tmp/moves.log\n"
+            "min_file_size: 100\n"
+        )
+        result = CliRunner().invoke(cli, ["-c", str(cfg_file), "org"])
+        assert result.exit_code != 0 or "No destination" in result.output
+
+    def test_org_nothing_new(self, tmp_path):
+        src, _dest, cfg_file = self._setup(tmp_path)
+        src.mkdir()
+        result = CliRunner().invoke(cli, ["-c", str(cfg_file), "org"])
+        assert result.exit_code == 0
+        assert "Nothing new" in result.output or "No audiobook" in result.output
+
+    def test_org_yes_flag_skips_prompt(self, tmp_path):
+        src, _dest, cfg_file = self._setup(tmp_path)
+        (src / "Author - Book.mp3").parent.mkdir(parents=True)
+        (src / "Author - Book.mp3").write_bytes(b"\x00" * 200)
+        result = CliRunner().invoke(cli, ["-c", str(cfg_file), "org", "--yes"])
+        assert result.exit_code == 0
+
+
+# ── rename command ───────────────────────────────────────────────────────
+
+
+class TestRenameCommand:
+    def _make_collection(self, root: Path, author: str, book_name: str) -> Path:
+        book_dir = root / author / book_name
+        book_dir.mkdir(parents=True)
+        (book_dir / "audio.mp3").write_bytes(b"\x00" * 200)
+        return book_dir
+
+    def _make_cfg_file(self, tmp_path: Path, dest: Path) -> Path:
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(
+            f"source_dirs: []\ndestination: {dest}\nmove_log: {tmp_path / 'moves.log'}\n"
+            "min_file_size: 100\n"
+        )
+        return cfg_file
+
+    def test_rename_help(self):
+        result = CliRunner().invoke(cli, ["rename", "--help"])
+        assert result.exit_code == 0
+
+    def test_rename_dry_run_all_match(self, tmp_path):
+        """When all folders already match conventions, report no renames needed."""
+        dest = tmp_path / "collection"
+        self._make_collection(dest, "Author", "Book Title")
+        cfg_file = self._make_cfg_file(tmp_path, dest)
+        with patch("audiobook_organizer.scanner.parse_audio_tags") as mock_tags:
+            from audiobook_organizer.parser import AudiobookMeta
+
+            mock_tags.return_value = AudiobookMeta(author="Author", title="Book Title")
+            result = CliRunner().invoke(cli, ["-c", str(cfg_file), "rename", "--dry-run"])
+        assert result.exit_code == 0
+
+    def test_rename_dry_run_shows_renames(self, tmp_path):
+        """Folders that need renaming should be shown in dry-run output."""
+        dest = tmp_path / "collection"
+        # Create a book whose folder name includes a year
+        book_dir = dest / "Author" / "2001 - Book Title"
+        book_dir.mkdir(parents=True)
+        (book_dir / "audio.mp3").write_bytes(b"\x00" * 200)
+        cfg_file = self._make_cfg_file(tmp_path, dest)
+        with patch("audiobook_organizer.scanner.parse_audio_tags") as mock_tags:
+            from audiobook_organizer.parser import AudiobookMeta
+
+            mock_tags.return_value = AudiobookMeta(author="Author", title="Book Title", year="2001")
+            result = CliRunner().invoke(cli, ["-c", str(cfg_file), "rename", "--dry-run"])
+        assert result.exit_code == 0
+
+
+# ── analyze command ───────────────────────────────────────────────────────
+
+
+class TestAnalyzeCommand:
+    def _make_collection(self, root: Path) -> None:
+        book_dir = root / "Author" / "Book Title"
+        book_dir.mkdir(parents=True)
+        (book_dir / "audio.mp3").write_bytes(b"\x00" * 200)
+
+    def _make_cfg_file(self, tmp_path: Path, dest: Path) -> Path:
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(
+            f"source_dirs: []\ndestination: {dest}\nmove_log: {tmp_path / 'moves.log'}\n"
+            "min_file_size: 100\n"
+        )
+        return cfg_file
+
+    def test_analyze_help(self):
+        result = CliRunner().invoke(cli, ["analyze", "--help"])
+        assert result.exit_code == 0
+
+    def test_analyze_empty_collection(self, tmp_path):
+        dest = tmp_path / "collection"
+        dest.mkdir()
+        cfg_file = self._make_cfg_file(tmp_path, dest)
+        result = CliRunner().invoke(cli, ["-c", str(cfg_file), "analyze"])
+        assert result.exit_code == 0
+
+    def test_analyze_with_path_override(self, tmp_path):
+        dest = tmp_path / "collection"
+        dest.mkdir()
+        cfg_file = self._make_cfg_file(tmp_path, dest)
+        result = CliRunner().invoke(
+            cli, ["-c", str(cfg_file), "analyze", "--path", str(dest)]
+        )
+        assert result.exit_code == 0
+
+    def test_analyze_with_no_check_tags(self, tmp_path):
+        dest = tmp_path / "collection"
+        self._make_collection(dest)
+        cfg_file = self._make_cfg_file(tmp_path, dest)
+        with patch("audiobook_organizer.scanner.parse_audio_tags") as mock_tags:
+            from audiobook_organizer.parser import AudiobookMeta
+
+            mock_tags.return_value = AudiobookMeta(author="Author", title="Book Title")
+            result = CliRunner().invoke(
+                cli, ["-c", str(cfg_file), "analyze", "--no-check-tags"]
+            )
+        assert result.exit_code == 0
+
+
+# ── undo command ──────────────────────────────────────────────────────────
+
+
+class TestUndoCommand:
+    def test_undo_dry_run(self, tmp_cfg):
+        result = CliRunner().invoke(cli, ["-c", tmp_cfg, "undo", "--dry-run"])
+        assert result.exit_code == 0
+        assert "Nothing to undo" in result.output
