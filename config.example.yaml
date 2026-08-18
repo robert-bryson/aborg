@@ -3,17 +3,16 @@ source_dirs:
   - ~/Downloads
   # - /path/to/other/dir
 
-# Destination root directory (Audiobookshelf-compatible)
-# WSL path — adjust to match your NAS mount point
+# Root directory for the organized collection (Audiobookshelf-compatible)
 destination: "/mnt/audiobooks"
 
-# File extensions to treat as audiobook archives
+# File extensions treated as audiobook archives
 archive_extensions:
   - .zip
   - .rar
   - .7z
 
-# File extensions to treat as audiobook audio
+# File extensions treated as audiobook audio
 audio_extensions:
   - .m4b
   - .mp3
@@ -24,7 +23,7 @@ audio_extensions:
   - .wma
   - .aac
 
-# File extensions to treat as ebook/companion files
+# File extensions treated as companion or ebook files
 companion_extensions:
   - .jpg
   - .jpeg
@@ -36,14 +35,15 @@ companion_extensions:
   - .txt
   - .opf
 
-# Auto-extract archives at destination (zip only; rar/7z are moved as-is)
+# Extract archives at destination. Only zip archives are extracted.
+# Non-zip archives (.rar, .7z) move as-is.
 auto_extract: true
 
 # Delete archive after successful extraction
 delete_after_extract: false
 
-# Filename patterns to parse (tried in order, first match wins)
-# Groups: author, title, series, sequence, year, narrator
+# Regex patterns for parsing filenames. Patterns are tried in order. The first match wins.
+# Supported capture groups: author, title, series, sequence, year, narrator
 filename_patterns:
   # N - Title - Author - Year  (e.g. "2 - Dune - Frank Herbert - 1965")
   - '(?P<sequence>\d+)\s*-\s*(?P<title>.+)\s*-\s*(?P<author>[^\d]+?)\s*-\s*(?P<year>\d{4})\s*$'
@@ -61,32 +61,32 @@ filename_patterns:
   # Author_Title
   - '(?P<author>[^_]+)_(?P<title>.+)$'
 
-# Preferred author name format for folder names:
+# Author name format for folder names:
 #   last_first  → "Austen, Jane"  (library convention, default)
 #   first_last  → "Jane Austen"   (natural reading order)
 author_name_format: last_first
 
-# Minimum file size to consider (bytes) — skip tiny files
+# Minimum file size in bytes. The tool skips smaller files.
 min_file_size: 1048576  # 1 MB
 
-# Move log file (for undo support)
+# Move log file. The undo command reads this file.
 move_log: "~/.aborg/moves.log"
 
 # Optional: map single-word author names (case-insensitive) to their full names.
-# Supplements the built-in table of classical/historical mononyms.
+# Supplements the built-in table of classical and historical mononyms.
 # known_authors:
 #   "Proust": "Marcel Proust"
 #   "Borges": "Jorge Luis Borges"
 
-# ── Libby / OverDrive integration (requires odmpy) ─────────────────────
+# ── Libby/OverDrive integration (requires odmpy) ────────────────────────────────────
 libby:
-  # Folder to store Libby authentication tokens
+  # Directory to store Libby authentication tokens
   settings_folder: "~/.aborg/libby"
 
-  # Merge downloaded MP3 parts into a single file
+  # Merge downloaded MP3 parts into one file
   merge: false
 
-  # Merged file format (mp3 or m4b; m4b requires ffmpeg)
+  # Merged file format. Use mp3 or m4b. The m4b format requires ffmpeg.
   merge_format: m4b
 
   # Embed chapter markers in downloaded files
@@ -96,5 +96,5 @@ libby:
   keep_cover: true
 
   # Folder name format for downloaded books (odmpy format string)
-  # Available: %(Title)s, %(Author)s, %(Series)s, %(ReadingOrder)s, %(Edition)s, %(ID)s
+  # Available tokens: %(Title)s, %(Author)s, %(Series)s, %(ReadingOrder)s, %(Edition)s, %(ID)s
   book_folder_format: "%(Author)s - %(Title)s"

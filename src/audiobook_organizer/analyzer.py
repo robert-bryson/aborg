@@ -210,7 +210,6 @@ def _check_duplicates(items: list[ScanResult], report: AnalysisReport) -> None:
         by_author[fold_accents(item.meta.author.lower())].append(item)
 
     # Collect matching pairs, then cluster them.
-    pairs: list[tuple[int, int]] = []  # (global index i, global index j)
     pair_items: list[tuple[ScanResult, ScanResult]] = []
 
     for author_items in by_author.values():
@@ -220,10 +219,9 @@ def _check_duplicates(items: list[ScanResult], report: AnalysisReport) -> None:
             for j in range(i + 1, n):
                 b = author_items[j]
                 if are_probable_duplicates(a.meta, b.meta):
-                    pairs.append((id(a), id(b)))
                     pair_items.append((a, b))
 
-    if not pairs:
+    if not pair_items:
         return
 
     # Union-find to cluster duplicates.
@@ -344,9 +342,6 @@ def _check_missing_covers(items: list[ScanResult], report: AnalysisReport) -> No
             )
 
 
-# _is_last_first and _flip_author_name are imported from parser.
-
-
 def _check_author_name_format(
     items: list[ScanResult],
     root: Path,
@@ -364,7 +359,10 @@ def _check_author_name_format(
         if author == "Unknown Author" or not item.path:
             continue
         if author not in author_dirs:
-            author_dirs[author] = root / item.path.relative_to(root).parts[0]
+            try:
+                author_dirs[author] = root / item.path.relative_to(root).parts[0]
+            except ValueError:
+                continue
 
     for author in sorted(author_dirs):
         is_lf = is_last_first(author)

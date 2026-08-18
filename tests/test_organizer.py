@@ -225,7 +225,7 @@ class TestUndo:
         assert undo_last(cfg) == []
 
     def test_undo_when_dest_already_deleted(self, tmp_path):
-        """Undo should skip entries where dest no longer exists (already cleaned up)."""
+        """Stale log entries (dest gone) are purged silently without reporting a restore."""
         src = _write(tmp_path / "src" / "book.mp3")
         log = tmp_path / "moves.log"
         dest = tmp_path / "dest"
@@ -239,11 +239,12 @@ class TestUndo:
         actual_dest = next(iter(dest.rglob("*.mp3")))
         actual_dest.unlink()
 
-        # Undo should not crash, but the file can't be restored
+        # Undo should not crash; stale entry is purged but nothing is reported restored
         undone = undo_last(cfg)
-        assert len(undone) == 1
-        # src won't exist because dest was already deleted
+        assert len(undone) == 0
         assert not src.exists()
+        # Log entry should have been removed
+        assert log.read_text().strip() == ""
 
     def test_undo_dry_run(self, tmp_path):
         src = _write(tmp_path / "src" / "book.mp3")
@@ -792,3 +793,112 @@ class TestZipBackslashTraversal:
         actions = organize([item], cfg)
         assert len(actions) == 0
         assert zip_path.exists()
+
+
+# ── Targeted coverage tests ───────────────────────────────────────────────
+
+
+class TestExtractExistingDest:
+    def test_extract_into_existing_dest_is_refused(self, tmp_path):
+        """Extracting when dest already exists should produce no actions."""
+        zip_path = tmp_path / "src" / "book.zip"
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("audio.mp3", b"\x00" * 100)
+
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
+        item = _scan_result(zip_path, kind="archive")
+
+        # Pre-create the exact destination directory that organize() would target
+        expected_dest = dest / item.meta.dest_relative(author_format=cfg.author_name_format)
+        expected_dest.mkdir(parents=True)
+
+        actions = organize([item], cfg)
+        assert len(actions) == 0
+
+
+class TestEmptyZipExtraction:
+    def test_truly_empty_zip_produces_no_action(self, tmp_path):
+        """A zip with no entries extracts nothing, so no action is recorded."""
+        zip_path = tmp_path / "src" / "empty.zip"
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        # Write a completely empty zip (no entries at all)
+        with zipfile.ZipFile(zip_path, "w"):
+            pass
+
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, auto_extract=True, move_log=tmp_path / "log")
+        item = _scan_result(zip_path, kind="archive")
+
+        actions = organize([item], cfg)
+        # Nothing to extract → no action recorded
+        assert len(actions) == 0
+
+
+class TestCopyDirectory:
+    def test_copy_directory_leaves_source_intact(self, tmp_path):
+        """Copying an audio_dir should copy the tree, leaving the source intact."""
+        book_dir = tmp_path / "src" / "Author - Book"
+        _write(book_dir / "track01.mp3")
+        _write(book_dir / "track02.mp3")
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, move_log=tmp_path / "log")
+        item = _scan_result(book_dir, kind="audio_dir")
+
+        actions = organize([item], cfg, copy=True)
+        assert len(actions) == 1
+        # Source intact
+        assert book_dir.exists()
+        assert (book_dir / "track01.mp3").exists()
+        # Destination created
+        assert actions[0][1].exists()
+
+
+class TestAudioGroupEdgeCases:
+    def test_empty_source_files_returns_no_action(self, tmp_path):
+        """audio_group with no source_files should produce no action and not crash."""
+        dummy = tmp_path / "src" / "flat"
+        dummy.mkdir(parents=True)
+        cfg = Config(destination=tmp_path / "dest", move_log=tmp_path / "log")
+        item = _scan_result(dummy, kind="audio_group", source_files=())
+
+        actions = organize([item], cfg)
+        assert len(actions) == 0
+
+    def test_existing_dest_for_group_refused(self, tmp_path):
+        """audio_group with pre-existing destination should produce no action."""
+        flat = tmp_path / "src" / "flat"
+        src_file = _write(flat / "track.mp3")
+        dest = tmp_path / "dest"
+        cfg = Config(destination=dest, move_log=tmp_path / "log")
+
+        item = _scan_result(flat, kind="audio_group", source_files=(src_file,))
+        # Pre-create the exact destination directory that organize() would target
+        expected = dest / item.meta.dest_relative(author_format=cfg.author_name_format)
+        expected.mkdir(parents=True)
+
+        actions = organize([item], cfg)
+        assert len(actions) == 0
+        # Source file still exists
+        assert src_file.exists()
+
+
+class TestUndoReportsOnlySuccessful:
+    def test_undo_purges_stale_dest_without_reporting(self, tmp_path):
+        """undo_last should purge entries where dest is gone, not report them as undone."""
+        src = _write(tmp_path / "src" / "book.mp3")
+        log = tmp_path / "moves.log"
+        cfg = Config(destination=tmp_path / "dest", move_log=log)
+        item = _scan_result(src)
+
+        organize([item], cfg)
+        # Delete the moved file (simulates manual cleanup)
+        actual_dest = next(iter((tmp_path / "dest").rglob("*.mp3")))
+        actual_dest.unlink()
+
+        undone = undo_last(cfg)
+        # Stale entry is purged but NOT reported as undone
+        assert len(undone) == 0
+        # Log should now be empty
+        assert log.read_text().strip() == ""

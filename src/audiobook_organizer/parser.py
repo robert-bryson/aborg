@@ -291,7 +291,7 @@ def _sanitize(name: str) -> str:
     name = name.lstrip(".")
     # Strip trailing dots/spaces, but preserve trailing initials (e.g. "Robert D.")
     while name and name[-1] in ". ":
-        if name[-1] == "." and re.search(r"\b[A-Za-z]\.$", name):
+        if name[-1] == "." and re.search(r"\b[A-Za-z]{1,2}\.$", name):
             break
         name = name[:-1]
     return name or "Unknown"

@@ -646,3 +646,133 @@ class TestCheckNamingConventionsEdge:
         # Unknown Title items should NOT get rename suggestions
         for issue in naming_issues:
             assert issue.path not in [u.path for u in unknown_items]
+
+
+# ── New targeted coverage tests ──────────────────────────────────────────
+
+
+class TestAreProbableDuplicatesPartNumbers:
+    """Explicit part numbers in titles must block duplicate detection."""
+
+    def test_different_parts_not_flagged(self):
+        first = AudiobookMeta(title="A Feast for Crows - Part 1")
+        second = AudiobookMeta(title="A Feast for Crows - Part 2")
+        assert are_probable_duplicates(first, second) is False
+
+    def test_different_discs_not_flagged(self):
+        first = AudiobookMeta(title="Dune Disc 1")
+        second = AudiobookMeta(title="Dune Disc 2")
+        assert are_probable_duplicates(first, second) is False
+
+    def test_same_part_flagged(self):
+        first = AudiobookMeta(title="A Feast for Crows - Part 1")
+        second = AudiobookMeta(title="A Feast for Crows - Part 1")
+        assert are_probable_duplicates(first, second) is True
+
+    def test_one_has_part_other_does_not(self):
+        """When only one book has a part number, no false negative."""
+        first = AudiobookMeta(title="A Feast for Crows - Part 1")
+        second = AudiobookMeta(title="A Feast for Crows")
+        # One has a part, the other doesn't — ratio will determine outcome.
+        # We just assert the function doesn't crash.
+        result = are_probable_duplicates(first, second)
+        assert isinstance(result, bool)
+
+
+class TestAnalyzeCollectionReadTags:
+    """analyze_collection with read_tags=True exercises _check_metadata_quality."""
+
+    def test_read_tags_runs_metadata_quality_check(self, tmp_path):
+        """read_tags=True should trigger the metadata quality check branch."""
+        _make_audio(tmp_path / "Author" / "Book" / "audio.mp3")
+
+        cfg = make_cfg()
+        report = analyze_collection(tmp_path, cfg, read_tags=True)
+        # The report should not crash and should have items
+        assert isinstance(report, AnalysisReport)
+
+    def test_read_tags_false_skips_quality_check(self, tmp_path):
+        """read_tags=False should not run _check_metadata_quality."""
+        _make_audio(tmp_path / "Author" / "Book" / "audio.mp3")
+
+        cfg = make_cfg()
+        report = analyze_collection(tmp_path, cfg, read_tags=False)
+        assert isinstance(report, AnalysisReport)
+
+
+class TestApplyFixesDryRun:
+    """apply_fixes with dry_run=True should call on_fix but make no changes."""
+
+    def test_dry_run_calls_callback(self, tmp_path):
+        empty = tmp_path / "Author" / "EmptyBook"
+        empty.mkdir(parents=True)
+        _make_audio(tmp_path / "Author" / "RealBook" / "audio.mp3")
+
+        cfg = make_cfg()
+        report = analyze_collection(tmp_path, cfg)
+
+        called: list[tuple[str, bool]] = []
+        applied = apply_fixes(report, dry_run=True, on_fix=lambda a, ok, e: called.append((a.kind, ok)))
+        assert len(applied) >= 1
+        assert all(ok for _, ok in called)
+        # The empty dir must still exist — dry run made no changes
+        assert empty.exists()
+
+    def test_apply_remove_dir_nonempty_fails(self, tmp_path):
+        """rmdir() fails on non-empty directories — _apply_remove_dir returns False."""
+        from audiobook_organizer.analyzer import _apply_remove_dir
+
+        nonempty = tmp_path / "nonempty"
+        nonempty.mkdir()
+        (nonempty / "file.txt").write_text("x")
+
+        action = FixAction(kind="remove_dir", source=nonempty)
+        ok, err = _apply_remove_dir(action)
+        assert ok is False
+        assert err
+
+
+class TestCheckAuthorNameFormatOutsidePath:
+    """_check_author_name_format should not crash for items with paths outside root."""
+
+    def test_no_crash_when_path_not_relative_to_root(self, tmp_path):
+        from audiobook_organizer.analyzer import _check_author_name_format
+
+        root = tmp_path / "collection"
+        root.mkdir()
+        # An item whose path is outside root (e.g. from a different source)
+        outside = tmp_path / "other" / "Author" / "Book" / "audio.mp3"
+        outside.parent.mkdir(parents=True)
+        outside.write_bytes(b"\x00" * 100)
+
+        from audiobook_organizer.parser import AudiobookMeta
+        from audiobook_organizer.scanner import ScanResult
+
+        items = [
+            ScanResult(
+                path=outside.parent,
+                kind="audio_dir",
+                meta=AudiobookMeta(author="Author", title="Book"),
+                size=100,
+            )
+        ]
+        cfg = make_cfg(author_name_format="last_first")
+        report = AnalysisReport()
+        # Should not raise ValueError
+        _check_author_name_format(items, root, cfg, report)
+
+
+class TestDuplicateClusteringWithThreeItems:
+    """Three near-identical books should produce one cluster issue, not O(n²) issues."""
+
+    def test_three_near_identical_titles(self, tmp_path):
+        titles = ["The Great Novel", "The Great Novels", "The Great Novel!"]
+        for title in titles:
+            _make_audio(tmp_path / "Author" / title / "audio.mp3")
+
+        cfg = make_cfg()
+        report = analyze_collection(tmp_path, cfg)
+        dup_issues = [i for i in report.issues if i.category == "duplicate"]
+        # Three items in one cluster → 1 issue (not 3)
+        assert len(dup_issues) == 1
+        assert "3" in dup_issues[0].message

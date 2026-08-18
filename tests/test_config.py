@@ -152,3 +152,62 @@ class TestConfigSave:
         assert cfg.archive_extensions  # has default archive extensions
         assert cfg.filename_patterns  # has default patterns
         assert cfg.min_file_size > 0  # has a sane minimum
+
+
+class TestConfigLoadEdgeCases:
+    def test_invalid_min_file_size_string_uses_default(self, tmp_path):
+        """A non-integer min_file_size value should silently use the default."""
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text("min_file_size: '1 MB'\n")
+        default_min = Config.default().min_file_size
+        cfg = Config.load(cfg_file)
+        assert cfg.min_file_size == default_min
+
+    def test_invalid_min_file_size_null_uses_default(self, tmp_path):
+        """A null min_file_size should silently use the default."""
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text("min_file_size: null\n")
+        default_min = Config.default().min_file_size
+        cfg = Config.load(cfg_file)
+        assert cfg.min_file_size == default_min
+
+    def test_libby_settings_loaded(self, tmp_path):
+        """Libby sub-section values should be loaded correctly."""
+        import yaml
+
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(
+            yaml.dump(
+                {
+                    "libby": {
+                        "merge": True,
+                        "merge_format": "mp3",
+                        "chapters": False,
+                        "keep_cover": False,
+                        "settings_folder": str(tmp_path / "libby"),
+                    }
+                }
+            )
+        )
+        cfg = Config.load(cfg_file)
+        assert cfg.libby_merge is True
+        assert cfg.libby_merge_format == "mp3"
+        assert cfg.libby_chapters is False
+        assert cfg.libby_keep_cover is False
+        assert cfg.libby_settings == tmp_path / "libby"
+
+    def test_known_authors_empty_values_skipped(self, tmp_path):
+        """Empty keys or values in known_authors are silently dropped."""
+        import yaml
+
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(yaml.dump({"known_authors": {"  ": "should be dropped", "Homer": ""}}))
+        cfg = Config.load(cfg_file)
+        assert cfg.known_authors == {}
+
+    def test_config_default_factory_independent(self):
+        """Two Config instances should not share mutable defaults."""
+        a = Config()
+        b = Config()
+        a.source_dirs.append(Path("/some/path"))
+        assert b.source_dirs == []

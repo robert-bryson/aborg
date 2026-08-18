@@ -504,9 +504,10 @@ def org(
                     )
                 else:
                     done += 1
-                    console.print(
-                        f"  [green]✓[/green] [dim]{i}.[/dim] {item.meta.author} — {item.meta.title}"
-                    )
+                    if not dry_run:
+                        console.print(
+                            f"  [green]✓[/green] [dim]{i}.[/dim] {item.meta.author} — {item.meta.title}"
+                        )
             else:
                 failed += 1
 

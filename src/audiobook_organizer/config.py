@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
@@ -122,7 +123,8 @@ class Config:
         if "filename_patterns" in raw:
             cfg.filename_patterns = raw["filename_patterns"]
         if "min_file_size" in raw:
-            cfg.min_file_size = int(raw["min_file_size"])
+            with contextlib.suppress(TypeError, ValueError):
+                cfg.min_file_size = int(raw["min_file_size"])
         if "move_log" in raw:
             cfg.move_log = Path(raw["move_log"]).expanduser()
         if "author_name_format" in raw:

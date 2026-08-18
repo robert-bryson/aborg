@@ -263,8 +263,9 @@ def undo_last(cfg: Config, *, dry_run: bool = False) -> list[tuple[Path, Path]]:
             continue
         _, operation, src, dest = entry
         if not dest.exists():
+            # Destination is already gone — stale log entry; purge it without
+            # reporting a successful undo (nothing was actually restored).
             completed_indices.add(index)
-            undone.append((dest, src))
             continue
         if dry_run:
             undone.append((dest, src))

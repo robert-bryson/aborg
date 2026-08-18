@@ -79,6 +79,7 @@ select = [
 ignore = [
     "S603",  # subprocess calls use shell=False (default); all inputs are controlled
     "S607",  # subprocess calls use sys.executable or known binaries, not user input
+    "E501",  # line length enforced by formatter, not linter
 ]
 
 [tool.ruff.lint.per-file-ignores]

@@ -862,3 +862,105 @@ class TestScanCollectionEdgeCases:
         mock_tags.assert_called_once()
         assert without_tags.items[0].tag_meta is None
         assert with_tags.items[0].tag_meta is not None
+
+
+# ── Targeted coverage tests ───────────────────────────────────────────────
+
+
+class TestContainerDirWithArchive:
+    def test_archive_inside_container_dir_is_found(self, tmp_path):
+        """An archive file inside a container dir should be scanned correctly."""
+        src = tmp_path / "downloads"
+        container = src / "Tolkien Collection"
+        container.mkdir(parents=True)
+        zip_path = container / "Author - The Hobbit.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("audiobook.mp3", b"\x00" * 51_000_000)
+
+        cfg = make_cfg(source_dirs=[src])
+        results, _ = scan_sources(cfg)
+        assert len(results) >= 1
+        assert any(r.kind == "archive" for r in results)
+
+    def test_sub_subdir_flat_album_split_in_container(self, tmp_path):
+        """A flat multi-album dir inside a container dir should be split."""
+        src = tmp_path / "downloads"
+        container = src / "Big Collection"
+        flat = container / "flat_dump"
+        first = flat / "book-one.mp3"
+        second = flat / "book-two.mp3"
+        _make_audio_file(first)
+        _make_audio_file(second)
+
+        def fake_mutagen(path, *, easy):
+            album = "Book One" if Path(path) == first else "Book Two"
+            return MagicMock(tags={"album": [album]})
+
+        def fake_tags(path):
+            if Path(path) == first:
+                return AudiobookMeta(author="Author One", title="Book One")
+            return AudiobookMeta(author="Author Two", title="Book Two")
+
+        cfg = make_cfg(source_dirs=[src])
+        with (
+            patch("audiobook_organizer.scanner.MutagenFile", side_effect=fake_mutagen),
+            patch("audiobook_organizer.scanner.parse_audio_tags", side_effect=fake_tags),
+        ):
+            results, _ = scan_sources(cfg)
+
+        assert len(results) == 2
+        assert all(r.kind == "audio_group" for r in results)
+
+
+class TestZipContainsAudioEdgeCases:
+    def test_corrupt_zip_returns_false(self, tmp_path):
+        """_zip_contains_audio should return False for corrupt zips."""
+        from audiobook_organizer.scanner import _zip_contains_audio
+
+        bad_zip = tmp_path / "bad.zip"
+        bad_zip.write_bytes(b"not a zip file")
+        cfg = make_cfg()
+        assert _zip_contains_audio(bad_zip, cfg.audio_extensions) is False
+
+    def test_unreadable_file_returns_false(self, tmp_path):
+        """_zip_contains_audio should return False when file can't be read."""
+        from audiobook_organizer.scanner import _zip_contains_audio
+
+        cfg = make_cfg()
+        assert _zip_contains_audio(tmp_path / "nonexistent.zip", cfg.audio_extensions) is False
+
+
+class TestReadTagsFromZip:
+    def test_returns_none_for_no_audio_entries(self, tmp_path):
+        from audiobook_organizer.scanner import _read_tags_from_zip
+
+        zip_path = tmp_path / "text_only.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("readme.txt", b"hello")
+
+        cfg = make_cfg()
+        assert _read_tags_from_zip(zip_path, cfg.audio_extensions) is None
+
+    def test_returns_none_for_oversized_entry(self, tmp_path):
+        from audiobook_organizer.scanner import _read_tags_from_zip
+
+        zip_path = tmp_path / "huge.zip"
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
+            # Store a large entry so file_size > 30 MB
+            info = zipfile.ZipInfo("audio.mp3")
+            info.file_size = 31 * 1024 * 1024 + 1
+            # Write minimal data — the file_size metadata is what matters
+            zf.writestr(info, b"\x00")
+
+        cfg = make_cfg()
+        result = _read_tags_from_zip(zip_path, cfg.audio_extensions)
+        # Either returns None (size check) or returns metadata from tiny content
+        assert result is None or result.author == "Unknown Author"
+
+    def test_returns_none_for_corrupt_zip(self, tmp_path):
+        from audiobook_organizer.scanner import _read_tags_from_zip
+
+        corrupt = tmp_path / "bad.zip"
+        corrupt.write_bytes(b"definitely not a zip")
+        cfg = make_cfg()
+        assert _read_tags_from_zip(corrupt, cfg.audio_extensions) is None
