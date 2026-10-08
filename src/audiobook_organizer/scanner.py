@@ -171,10 +171,10 @@ def scan_sources(
             )
         )
         if dedup_key in seen_titles:
-            _log(f"  [yellow]skip duplicate[/yellow] {entry.name}")
+            _log(f"  Skip duplicate: {entry.name}")
             return
         seen_titles.add(dedup_key)
-        _log(f"  [green]✓[/green] {result.meta.author} — {result.meta.title}")
+        _log(f"  Found: {result.meta.author} — {result.meta.title}")
         results.append(result)
         author_results.setdefault(author_key, []).append(result)
         _hit(result)
@@ -182,9 +182,9 @@ def scan_sources(
     for src_dir in source_dirs:
         if not src_dir.exists():
             missing_dirs.append(src_dir)
-            _log(f"[dim]Skipping missing dir: {src_dir}[/dim]")
+            _log(f"Skipping missing dir: {src_dir}")
             continue
-        _log(f"Scanning [cyan]{src_dir}[/cyan] …")
+        _log(f"Scanning {src_dir} …")
         for entry in sorted(src_dir.iterdir()):
             resolved = entry.resolve()
             if resolved in seen:

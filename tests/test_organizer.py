@@ -902,3 +902,160 @@ class TestUndoReportsOnlySuccessful:
         assert len(undone) == 0
         # Log should now be empty
         assert log.read_text().strip() == ""
+
+
+class TestOrganizerFailureBoundaries:
+    def test_unwritable_log_stops_before_source_changes(self, tmp_path):
+        source = _write(tmp_path / "source.mp3")
+        log = tmp_path / "log-as-directory"
+        log.mkdir()
+        cfg = Config(destination=tmp_path / "library", move_log=log)
+        assert organize([_scan_result(source)], cfg) == []
+        assert source.exists()
+        assert not cfg.destination.exists()
+
+    @pytest.mark.parametrize("copy", [False, True])
+    def test_log_append_failure_rolls_back_item(self, tmp_path, copy):
+        source = _write(tmp_path / "source.mp3")
+        cfg = Config(destination=tmp_path / "library", move_log=tmp_path / "moves.log")
+        item = _scan_result(source)
+        with patch("audiobook_organizer.organizer._log_actions", side_effect=OSError("disk full")):
+            assert organize([item], cfg, copy=copy) == []
+        assert source.read_bytes() == b"\0" * 1024
+        assert not (
+            cfg.destination
+            / item.meta.dest_relative(author_format=cfg.author_name_format)
+            / source.name
+        ).exists()
+        assert cfg.move_log.read_text(encoding="utf-8") == ""
+
+    def test_zip_log_failure_restores_deleted_source(self, tmp_path):
+        source = tmp_path / "source.zip"
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr("audio.mp3", b"audio")
+        cfg = Config(
+            destination=tmp_path / "library",
+            move_log=tmp_path / "moves.log",
+            auto_extract=True,
+            delete_after_extract=True,
+        )
+        item = _scan_result(source, kind="archive")
+        with patch("audiobook_organizer.organizer._log_actions", side_effect=OSError("disk full")):
+            assert organize([item], cfg) == []
+        with zipfile.ZipFile(source) as archive:
+            assert archive.read("audio.mp3") == b"audio"
+        assert not (
+            cfg.destination / item.meta.dest_relative(author_format=cfg.author_name_format)
+        ).exists()
+
+    @pytest.mark.parametrize("kind", ["archive", "audio_dir"])
+    def test_failed_creation_does_not_delete_foreign_destination(self, tmp_path, kind):
+        source = tmp_path / ("source.zip" if kind == "archive" else "source")
+        if kind == "archive":
+            with zipfile.ZipFile(source, "w") as archive:
+                archive.writestr("audio.mp3", b"audio")
+        else:
+            _write(source / "audio.mp3", b"audio")
+        cfg = Config(
+            destination=tmp_path / "library", move_log=tmp_path / "moves.log", auto_extract=True
+        )
+        item = _scan_result(source, kind=kind)
+        target = cfg.destination / item.meta.dest_relative(author_format=cfg.author_name_format)
+        real_mkdir = Path.mkdir
+        raced = False
+
+        def mkdir(path, *args, **kwargs):
+            nonlocal raced
+            if path == target and not raced:
+                raced = True
+                real_mkdir(path, parents=True)
+                (path / "other-user.mp3").write_bytes(b"keep this data")
+                raise FileExistsError("destination appeared")
+            return real_mkdir(path, *args, **kwargs)
+
+        with patch.object(Path, "mkdir", new=mkdir):
+            assert organize([item], cfg, copy=True) == []
+        assert (target / "other-user.mp3").read_bytes() == b"keep this data"
+        assert source.exists()
+
+    def test_copy_cannot_put_destination_inside_source(self, tmp_path):
+        source = tmp_path / "source"
+        _write(source / "audio.mp3")
+        cfg = Config(destination=source / "nested-library", move_log=tmp_path / "moves.log")
+        assert organize([_scan_result(source, kind="audio_dir")], cfg, copy=True) == []
+        assert (source / "audio.mp3").exists()
+        assert not cfg.destination.exists()
+
+    def test_unicode_paths_can_be_organized_and_undone(self, tmp_path):
+        source = _write(tmp_path / "日本語" / "書籍.mp3")
+        cfg = Config(destination=tmp_path / "library", move_log=tmp_path / "moves.log")
+        assert organize([_scan_result(source, author="作者", title="書籍")], cfg)
+        assert "作者" in cfg.move_log.read_text(encoding="utf-8")
+        assert undo_last(cfg)
+        assert source.exists()
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "{invalid json}",
+            '{"operation": "erase"}',
+            '{"timestamp": "batch", "operation": "move", "source": null, "destination": "a"}',
+            "timestamp\terase\tsource\tdestination",
+            "timestamp\tmove\t\tdestination",
+        ],
+    )
+    def test_invalid_log_record_is_not_a_legacy_move(self, line):
+        assert _parse_log_line(line) is None
+
+    def test_json_log_preserves_control_characters_in_paths(self):
+        import json
+
+        source = "source\twith\ncharacters.mp3"
+        line = json.dumps(
+            {"timestamp": "batch", "operation": "move", "source": source, "destination": "dest"}
+        )
+        assert _parse_log_line(line) == ("batch", "move", Path(source), Path("dest"))
+
+
+def test_legacy_windows_log_encoding_is_migrated_before_append(tmp_path):
+    source = _write(tmp_path / "source.mp3")
+    log = tmp_path / "moves.log"
+    log.write_bytes("old\tsource\tdestination-é\n".encode("cp1252"))
+    cfg = Config(destination=tmp_path / "library", move_log=log)
+    assert organize([_scan_result(source)], cfg)
+    assert "destination-é" in log.read_text(encoding="utf-8")
+    assert undo_last(cfg)
+    assert source.exists()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_zip_rebuild_keeps_unrelated_temporary_file(tmp_path, monkeypatch, fail):
+    source = tmp_path / "source.zip"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("audio.mp3", b"audio")
+    cfg = Config(
+        destination=tmp_path / "library",
+        move_log=tmp_path / "moves.log",
+        auto_extract=True,
+        delete_after_extract=True,
+    )
+    actions = organize([_scan_result(source, kind="archive")], cfg)
+    destination = actions[0][1]
+    neighbor = _write(source.with_suffix(".zip.tmp"), b"unrelated temporary data")
+    if fail:
+
+        def fail_write(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(zipfile.ZipFile, "write", fail_write)
+    errors = []
+    undone = undo_last(cfg, on_error=errors.append)
+    assert bool(undone) is not fail
+    assert bool(errors) is fail
+    assert destination.exists() is fail
+    assert source.exists() is not fail
+    assert neighbor.read_bytes() == b"unrelated temporary data"
+    assert not list(tmp_path.glob(".source.zip.*.tmp"))
+    if not fail:
+        with zipfile.ZipFile(source) as archive:
+            assert archive.read("audio.mp3") == b"audio"

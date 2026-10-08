@@ -1,405 +1,339 @@
 # aborg
 
-aborg scans source directories, organizes audiobook files into a structured collection, and manages the collection. The output directory structure is compatible with [Audiobookshelf](https://www.audiobookshelf.org/).
-
-## Functions
-
-- **scan** — Find audiobook files in source directories. Supported formats: zip archives, `.m4b`, `.mp3`, loose audio folders, nested download wrappers, and flat multi-album directories. Applies accent-aware author deduplication and near-duplicate title warnings.
-- **org** — Move or copy files into an `Author / [Series] / Title` hierarchy.
-- **fetch** — Download audiobook loans from [Libby/OverDrive](https://www.overdrive.com/apps/libby). Optionally organize files after download.
-- **analyze** — Check an existing collection for issues: duplicates, missing metadata, inconsistent naming, missing cover art, and flat files.
-- **parse** — Test how the tool parses a filename before you run a scan.
-- **rename** — Rename existing folders to match Audiobookshelf naming conventions.
-- **undo** — Revert the last organize operation. Supports moves, copies, and zip extractions.
-
-All destructive commands support `--dry-run`.
-
-## Output structure
-
-```
-/mnt/audiobooks/
-├── Goodkind, Terry/
-│   └── Sword of Truth/
-│       ├── Vol 1 - 1994 - Wizards First Rule {Sam Tsoutsouvas}/
-│       │   ├── Track01.mp3
-│       │   └── cover.jpg
-│       └── Vol 2 - 1995 - Stone of Tears/
-│           └── audiobook.m4b
-├── Levy, Steven/
-│   └── Hackers - Heroes of the Computer Revolution {Mike Chamberlain}/
-│       └── audiobook.m4a
-└── Orwell, George/
-    └── 1945 - Animal Farm/
-        └── audiobook.mp3
-```
-
-This structure follows the [Audiobookshelf directory conventions](https://www.audiobookshelf.org/docs/#book-directory-structure).
+aborg scans source directories and puts audiobook files in an organized collection.
+The destination directory uses the [Audiobookshelf directory structure](https://www.audiobookshelf.org/docs/#book-directory-structure).
 
 ## Requirements
 
-Python 3.10 or later.
+- Python 3.10 or later.
+- [uv](https://docs.astral.sh/uv/) for the installation commands below.
+- odmpy for Libby downloads.
+- ffmpeg to merge downloads into M4B files.
 
-## Install
+## Installation
 
-```bash
-cd aborg
-uv pip install -e .
+Run these commands from the repository directory:
+
+```sh
+# Create the environment and install the development tools.
+uv sync
+
+# Install the optional Libby tools.
+uv sync --extra libby
+
+# Show the available commands.
+uv run aborg --help
 ```
 
-To install with Libby support:
+Use `uv run aborg` in this environment.
+If you use another active Python environment, install the package with `uv pip install -e .`.
+To include Libby support, use `uv pip install -e ".[libby]"`.
+The examples below use `aborg` from an active environment.
 
-```bash
-uv pip install -e ".[libby]"
-```
+## First use
 
-## Quick start
+1. Run `aborg config` to create the configuration file.
+2. Set the source directories and the destination directory.
+3. Create the destination directory if it does not exist.
+4. Run `aborg scan` to check the detected metadata.
+5. Run `aborg org --dry-run` to examine the planned operations.
+6. Run `aborg org` to organize the books.
 
-Before you use aborg, create a configuration file:
-
-```bash
-aborg config
-```
-
-The wizard writes `~/.aborg/config.yaml` and prompts for source directories and destination.
-
-```bash
-# Show what is in your source directories
-aborg scan
-
-# Show results in a table
-aborg scan --table
-
-# Preview what org would do
-aborg org --dry-run
-
-# Organize files
-aborg org
-
-# Copy instead of move
-aborg org --copy
-
-# Organize from a specific directory to a specific destination
-aborg org -d /path/to/downloads --dest /mnt/nas/audiobooks
-
-# Analyze your existing collection
-aborg analyze --path /mnt/nas/audiobooks
-
-# Apply automatic fixes
-aborg analyze --path /mnt/nas/audiobooks --fix
-
-# Test how the tool parses a filename
-aborg parse "Brandon Sanderson - Mistborn Book 1 - The Final Empire (2006) [Michael Kramer]"
-
-# Rename existing folders to match conventions
-aborg rename --path /mnt/nas/audiobooks --dry-run
-
-# Undo the last organize operation
-aborg undo
-
-# Link your Libby account
-aborg fetch --setup 12345678
-
-# List current Libby loans
-aborg fetch --list
-
-# Download and organize the latest loan
-aborg fetch --latest 1 --organize
-```
-
-## Configuration
-
-Run the interactive setup wizard to create a config file:
-
-```bash
-aborg config
-```
-
-This writes `~/.aborg/config.yaml`. See [`config.example.yaml`](config.example.yaml) for all options.
-
-When a config already exists, `aborg config` shows the current settings. Use `aborg config --show` to print the config explicitly.
-
-Key settings:
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `source_dirs` | *(none)* | Directories to scan for new audiobooks |
-| `destination` | *(none)* | Root of the organized collection |
-| `auto_extract` | `true` | Extract zip archives at destination. Non-zip archives move as-is. |
-| `delete_after_extract` | `false` | Delete archive after successful extraction |
-| `min_file_size` | `1 MB` | Skip files smaller than this value |
-| `filename_patterns` | 7 built-in | Regex patterns for parsing filenames. Patterns are tried in order. |
-| `author_name_format` | `last_first` | Author folder format: `last_first` (Austen, Jane) or `first_last` (Jane Austen) |
-| `known_authors` | `{}` | Case-insensitive aliases for single-name author expansion. Example: `Proust: Marcel Proust` |
-| `archive_extensions` | `.zip .rar .7z` | File extensions treated as archives |
-| `audio_extensions` | `.m4b .mp3 .m4a .ogg .opus .flac .wma .aac` | File extensions treated as audio |
-| `companion_extensions` | `.jpg .jpeg .png .pdf .epub .nfo .cue .txt .opf` | Companion files moved with audio files |
-| `move_log` | `~/.aborg/moves.log` | Log file used by `undo` |
-
-### Libby/OverDrive settings
-
-These settings are under the `libby:` key in the config file.
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `libby.settings_folder` | `~/.aborg/libby` | Storage location for Libby authentication tokens |
-| `libby.merge` | `false` | Merge downloaded MP3 parts into a single file |
-| `libby.merge_format` | `m4b` | Merged file format: `mp3` or `m4b`. The `m4b` format requires ffmpeg. |
-| `libby.chapters` | `true` | Embed chapter markers in downloaded files |
-| `libby.keep_cover` | `true` | Download cover art as `cover.jpg` |
-| `libby.book_folder_format` | `%(Author)s - %(Title)s` | odmpy folder name template |
-
-## Filename parsing
-
-The tool tries multiple regex patterns against filenames in order. You can configure patterns in the config file. Built-in patterns handle these formats:
-
-| Pattern | Example |
-|---------|---------|
-| `N - Title - Author - Year` | `2 - Dune - Frank Herbert - 1965` |
-| `Author - Series Book N - Title (Year) [Narrator]` | `Brandon Sanderson - Mistborn Book 1 - The Final Empire (2006) [Michael Kramer]` |
-| `Author - Title - Series, Book N` | `Arkady Martine - A Desolation Called Peace - Teixcalaan, Book 2` |
-| `Author - Title (Year) [Narrator]` | `Frank Herbert - Dune (1965) [Scott Brick]` |
-| `Series Name N Title` | `The Expanse 02.5 Gods of Risk` |
-| `Author_Title` | `Frank Herbert_Dune` |
-
-The two-part form `X - Y` is ambiguous. With default ordering, the tool interprets it as `Author - Title`. For collections that use `Title - Author`, reorder or replace `filename_patterns` in the config.
-
-Single-word names do not expand to arbitrary authors by default. The tool normalizes established mononyms such as `Molière` automatically. Use `known_authors` in the config for other single-name expansion.
-
-Metadata sources, from highest to lowest priority:
-
-1. **Sidecar JSON** — `metadata/metadata.json` inside an audiobook directory or zip archive. Creator roles: `aut` (author), `nrt` (narrator), `trl` (translator).
-2. **Audio tags** — ID3/Mutagen tags (artist, album, composer, series, narrator). The tool removes copyright notices, placeholders, malformed Windows-1252 punctuation, HTML entities, and noise qualifiers such as `(audio)`. When a tag date conflicts with a year at the end of the title, the title year takes priority.
-3. **Filename** — Parsed against the configured regex patterns.
+The configuration file is `~/.aborg/config.yaml` by default.
+Use `aborg -c PATH COMMAND` to select another configuration file.
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `scan` | List discovered audiobooks in source directories |
-| `org` | Organize (move or copy) audiobooks to the destination |
-| `fetch` | Download audiobook loans from Libby/OverDrive |
-| `analyze` | Audit an existing collection and list issues |
-| `parse` | Test filename parsing |
-| `rename` | Batch-rename folders to match conventions |
-| `undo` | Revert the last organize batch |
-| `config` | Show or initialize configuration |
-| `about` | Show version, build, and project information |
-| `tldr` | Show common commands and quick-start examples |
+| Command | Function |
+| --- | --- |
+| `scan` | Find audiobooks in the source directories. |
+| `org` | Move, copy, or extract audiobooks into the collection. |
+| `fetch` | Download audiobook loans from Libby. |
+| `analyze` | Find metadata, naming, and directory problems. |
+| `rename` | Change title directory names to the required format. |
+| `undo` | Reverse the most recent organize batch. |
+| `parse` | Show the metadata from a name or path. |
+| `config` | Show the configuration or start the setup procedure. |
+| `about` | Show the version and environment information. |
+| `tldr` | Show common command examples. |
 
-Use `-c / --config` before any command to load a specific config file.
+Use `aborg COMMAND --help` for the full option list.
+Use `--dry-run` before an operation that changes collection data.
+Do not run simultaneous change commands against the same collection or undo log.
 
----
+### Scan
 
-### `scan`
-
-Scan source directories and display discovered audiobooks.
-
-```
-aborg scan [OPTIONS]
-```
-
-| Option | Description |
-|--------|-------------|
-| `-d, --dir PATH` | Additional directory to scan (repeatable) |
-| `--table` | Show results in a table instead of streaming output |
-| `--cache` | Use fingerprint-based cache from previous scans |
-
----
-
-### `org`
-
-Scan source directories and move (or copy) each audiobook into the destination hierarchy.
-
-```
-aborg org [OPTIONS]
+```sh
+aborg scan
+aborg scan --table
+aborg scan --verbose
+aborg scan -d /path/to/other/downloads --cache
 ```
 
-| Option | Description |
-|--------|-------------|
-| `-d, --dir PATH` | Additional directory to scan (repeatable) |
-| `--dest PATH` | Override the configured destination directory |
-| `--dry-run` | Preview actions without making changes |
-| `--copy` | Copy files instead of moving them |
-| `-y, --yes` | Skip the confirmation prompt |
-| `--cache` | Use fingerprint-based cache from previous scans |
-| `--clean-exists` | Delete source files that are already in the collection |
+| Option | Function |
+| --- | --- |
+| `-d, --dir PATH` | Add a source directory. Repeat this option to add more directories. |
+| `--table` | Print each book once in a table. |
+| `-v, --verbose` | Show the destination path for each book. |
+| `--cache` | Use stored scan results for unchanged paths. |
 
-After organizing, the tool offers to remove empty source directories left behind by moves, or to delete the copied originals when you use `--copy`.
+The `NEW` label means that the destination path does not exist.
+The `EXISTS` label means that the destination path exists.
+This label does not confirm that the destination contains a complete copy.
+Cleanup makes a separate content check before deletion.
 
----
+Rows use text labels and adjust to the terminal width.
+Set the `NO_COLOR` environment variable to disable color.
+Rich removes terminal control codes from redirected output unless an environment setting forces terminal mode.
 
-### `fetch`
+The scanner accepts audio files, audio directories, and configured archive formats.
+It can separate tagged albums in a shared directory.
+It skips files below `min_file_size`.
+It also skips archives below 50,000,000 bytes.
 
-Download audiobook loans from Libby/OverDrive. Requires [odmpy](https://github.com/ping/odmpy).
+### Organize
 
+```sh
+aborg org --dry-run
+aborg org
+aborg org --copy
+aborg org --clean-exists --dry-run
+aborg org --clean-exists
+aborg org --yes --clean-exists
 ```
-aborg fetch [OPTIONS]
-```
 
-| Option | Description |
-|--------|-------------|
-| `--setup CODE` | Link your Libby account using an 8-digit setup code |
-| `--list` | List current audiobook loans and exit |
-| `--latest N` | Download the latest *N* loans |
-| `--select ID` | Download a specific loan by ID (repeatable) |
-| `--all` | Download all current audiobook loans |
-| `-d, --download-dir PATH` | Override the download directory (default: first `source_dir`) |
-| `--organize` | Run `aborg org` automatically after downloading |
-| `--merge` | Merge MP3 parts into one file (overrides config) |
-| `--dry-run` | Show what would be downloaded without downloading |
+| Option | Function |
+| --- | --- |
+| `-d, --dir PATH` | Add a source directory. |
+| `--dest PATH` | Use this destination directory. |
+| `--dry-run` | Check the plan without changing source or destination data. |
+| `--copy` | Keep the original data when you organize a book. |
+| `-y, --yes` | Accept the plan without a prompt. Keep optional cleanup paths. |
+| `-v, --verbose` | Show the destination path for each book. |
+| `--cache` | Use stored scan results. |
+| `--clean-exists` | Delete verified sources for books that already have a destination. |
 
-**Step-by-step workflow:**
+The confirmation prompt names the planned operations, including source deletion.
+A cleanup-only operation asks to delete sources.
+An operation with no work ends without a prompt.
+The final result includes organizing and cleanup counts.
 
-```bash
-# Step 1: Link your account (one time)
+Cleanup compares the source data with the stored data.
+It checks each source file or ZIP member against its stored file.
+The relative file names must match.
+Extra destination files, such as cover images, do not prevent cleanup.
+
+Cleanup keeps a source if stored files are missing, incomplete, or different.
+It also keeps a source if verification detects a data change.
+Cleanup rejects links, Windows reparse points, protected directories, and paths outside the configured source directories.
+It removes an empty directory only if that directory is still empty.
+
+Content checks read the source and stored data.
+Large books can need more time.
+`--dry-run --clean-exists` makes the same checks without deletion.
+An incomplete cleanup returns a nonzero exit code.
+
+Sources with a destination created during the current batch are kept.
+`--clean-exists` does not delete these sources.
+After organizing, an optional prompt offers to remove copied originals or empty source directories.
+`--yes` does not accept this optional cleanup.
+
+ZIP extraction keeps the source archive by default.
+Set `delete_after_extract: true` to remove an archive after successful extraction.
+`--copy` keeps the source archive.
+Source cleanup is permanent; `aborg undo` cannot restore cleanup deletions.
+
+### Fetch
+
+```sh
 aborg fetch --setup 12345678
-
-# Step 2: List available loans
 aborg fetch --list
-
-# Step 3: Download by loan ID or by recency
-aborg fetch --select abc123
-aborg fetch --latest 3 --organize
-aborg fetch --all
+aborg fetch --latest 1 --organize
+aborg fetch --select LOAN_ID --download-dir /path/to/downloads
+aborg fetch --all --dry-run
 ```
 
-Get a Libby setup code at <https://help.libbyapp.com/en-us/6070.htm>.
+Select one action: `--setup`, `--list`, `--latest`, `--select`, or `--all`.
+Repeat `--select` to download more than one loan.
+`--latest` requires a positive integer.
+An invalid loan ID stops the selection before downloads start.
 
----
+| Option | Function |
+| --- | --- |
+| `--setup CODE` | Link a Libby account with an eight-digit setup code. |
+| `--list` | Show the available audiobook loans. |
+| `--latest N` | Download the latest N loans. |
+| `--select ID` | Download the selected loan. |
+| `--all` | Download all available audiobook loans. |
+| `-d, --download-dir PATH` | Set the download directory. |
+| `--organize` | Organize the downloaded books from the selected download directory. |
+| `--merge` | Merge the audio parts into one file. |
+| `--dry-run` | Show the download plan without downloading books. |
 
-### `analyze`
+Without `--download-dir`, downloads use the first configured source directory.
+A download requires one of these directory settings.
+Failed downloads return a nonzero exit code.
+Account checks can access Libby during a download preview.
+Get a setup code from the [Libby instructions](https://help.libbyapp.com/en-us/6070.htm).
 
-Check an existing organized collection. The tool reports duplicates, missing metadata, inconsistent author name format, empty directories, missing cover art, and flat files.
+### Analyze and rename
 
-```
-aborg analyze [OPTIONS]
-```
-
-| Option | Description |
-|--------|-------------|
-| `--path PATH` | Collection root to analyze (default: configured destination) |
-| `--fix` | Apply automatic fixes for detected issues |
-| `--dry-run` | Show what `--fix` would do without making changes |
-| `-y, --yes` | Skip the confirmation prompt when using `--fix` |
-| `--cache` | Use fingerprint-based cache from previous scans |
-| `--check-tags / --no-check-tags` | Read audio tags to check metadata quality (use `--no-check-tags` for speed) |
-
----
-
-### `parse`
-
-Parse a filename or file path and show the extracted metadata. Use this command to test `filename_patterns` before running a scan.
-
-```
-aborg parse FILENAME
-```
-
-When you supply an actual audio file path, `parse` also reads the ID3 tags and shows the merged result. This is the same logic that `aborg scan` uses.
-
----
-
-### `rename`
-
-Rename folders in an existing collection so their names match the configured Audiobookshelf conventions.
-
-```
-aborg rename [OPTIONS]
+```sh
+aborg analyze --path /path/to/library
+aborg analyze --no-check-tags
+aborg analyze --fix --dry-run
+aborg analyze --fix
+aborg rename --dry-run
+aborg rename --yes
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--path PATH` | Collection root (default: configured destination) |
-| `--dry-run` | Show what would be renamed without making changes |
-| `-y, --yes` | Skip the confirmation prompt |
-| `--cache` | Use fingerprint-based cache from previous scans |
+`analyze` checks duplicate books, unknown metadata, author names, empty directories, cover images, and directory names.
+`--no-check-tags` skips audio tag reads.
+`--fix` applies available corrections after confirmation.
+`--yes` accepts these corrections without a prompt.
 
----
+`rename` changes title directory names.
+Both commands accept `--path` to select a collection and `--cache` to use stored scan results.
+They report failed corrections or name conflicts with a nonzero exit code.
+The organize undo log does not record these corrections.
 
-### `undo`
+### Undo
 
-Revert the most recent `org` operation. Moves restore to their source path. Copies are removed from the destination. Extracted zip directories are removed. When `delete_after_extract` deleted the original zip, `undo` rebuilds the zip from the extracted files before removing the destination directory.
-
-```
-aborg undo [OPTIONS]
-```
-
-| Option | Description |
-|--------|-------------|
-| `--dry-run` | Show what would be undone without making changes |
-
----
-
-### `config`
-
-Show the current configuration or start the interactive setup wizard.
-
-```
-aborg config [OPTIONS]
+```sh
+aborg undo --dry-run
+aborg undo
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--show` | Print the current configuration and exit |
+Undo processes the most recent recorded organize batch.
+It restores moved data and removes copied data from the destination.
+For extraction, it removes the extracted directory.
+If the source ZIP is missing, undo first rebuilds it from the extracted files.
+The rebuilt ZIP can have different compression and archive metadata.
 
-When no config file exists, `aborg config` starts an interactive wizard. The wizard prompts for source directories, destination, and key settings, then writes `~/.aborg/config.yaml`.
+A conflicting source path prevents restoration of that move.
+The undo log keeps failed entries for another attempt.
+New records use UTF-8 JSON Lines and absolute paths.
+The reader also accepts the two earlier tab-separated log formats.
+Keep a backup of the collection; the undo log is not a backup.
 
----
+### Other commands
 
-### `about`
-
-Show version, build, and project information.
-
-```
+```sh
+aborg parse "Frank Herbert - Dune (1965) [Scott Brick]"
+aborg config --show
 aborg about
-```
-
-Displays: installed version, last git commit (when running from source), Python version, install path, config path, repository URL, website, and license.
-
----
-
-### `tldr`
-
-Show common commands and quick-start examples grouped by task.
-
-```
+aborg about --verbose
 aborg tldr
 ```
 
-## Security
+`parse` shows filename metadata and available audio tags.
+`about` shows the selected configuration path and a short Python version.
+`about --verbose` also shows the Python build and executable path.
 
-The tool validates all zip archive member paths before extraction. It rejects:
+## Configuration
 
-- Absolute paths
-- Directory traversal sequences (`..`)
-- Symlink entries
+Use [config.example.yaml](config.example.yaml) as the configuration reference.
+YAML lists must contain strings.
+Boolean values must be YAML booleans, such as `true` or `false`, without quotation marks.
+Invalid types, invalid name formats, and invalid regular expressions stop the command before changes start.
 
-A zip that fails validation is refused entirely. The source archive is not modified.
+| Setting | Default | Function |
+| --- | --- | --- |
+| `source_dirs` | Empty list | Source directories to scan. |
+| `destination` | Unset | Destination directory for the collection. |
+| `auto_extract` | `true` | Extract ZIP files. Move or copy other archives without extraction. |
+| `delete_after_extract` | `false` | Delete a ZIP after successful extraction, except with `--copy`. |
+| `min_file_size` | `1048576` | Minimum file size in bytes. Use a nonnegative integer. |
+| `author_name_format` | `last_first` | Use `last_first` or `first_last` author directory names. |
+| `known_authors` | Empty mapping | Map an author alias to a full author name. |
+| `filename_patterns` | Seven patterns | Apply these regular expressions in order. |
+| `archive_extensions` | `.zip .rar .7z` | Archive file extensions. |
+| `audio_extensions` | See the example file | Audio file extensions. |
+| `companion_extensions` | See the example file | File extensions for related files, such as cover images. |
+| `move_log` | `~/.aborg/moves.log` | Undo log path. |
+
+The `libby` mapping contains these settings:
+
+| Setting | Default | Function |
+| --- | --- | --- |
+| `settings_folder` | `~/.aborg/libby` | Store Libby account data here. |
+| `merge` | `false` | Merge downloaded audio parts. |
+| `merge_format` | `m4b` | Use `mp3` or `m4b` for merged data. |
+| `chapters` | `true` | Add chapter markers. |
+| `keep_cover` | `true` | Download the cover image. |
+| `book_folder_format` | `%(Author)s - %(Title)s` | Set the odmpy directory name template. |
+
+Configuration and cache files use UTF-8 and atomic file replacement.
+Malformed cache records cause a new scan; the cache is not proof of stored content.
+
+## Metadata and directory names
+
+For source scans, metadata has this priority:
+
+1. Sidecar JSON at `metadata/metadata.json`, in the directory or ZIP.
+2. Audio tags from Mutagen.
+3. The configured filename patterns.
+
+Sidecar creator roles include `aut` for authors, `nrt` for narrators, and `trl` for translators.
+The parser removes common placeholders and damaged punctuation from audio tags.
+It can also detect a series name and sequence number.
+
+The default two-part pattern treats `X - Y` as `Author - Title`.
+Change the pattern order for collections that use `Title - Author`.
+Use `known_authors` to expand a single-name alias.
+The parser also recognizes established names such as `Molière`.
+
+Destination paths have this form:
+
+```text
+Author / [Series /] [Vol N - ] [Year - ] Title [ {Narrator} ]
+```
+
+For example:
+
+```text
+Audiobooks/
+  Orwell, George/
+    1945 - Animal Farm/
+      audiobook.mp3
+```
+
+The parser removes unsupported path characters and truncates long titles after 180 characters.
+Different long titles can produce the same destination name.
+The organizer keeps a later source when an earlier operation creates that destination.
+
+## Data protection
+
+ZIP checks reject absolute paths, parent-directory traversal, drive prefixes, and symbolic link entries.
+A ZIP with an unsafe member path remains unchanged.
+A failed extraction removes only a destination directory that this operation created.
+The organizer rejects destinations outside the configured collection or inside the source directory.
+It checks undo log access before data changes and reverses an item if its log write fails.
+
+Keep the account settings directory private.
+Do not edit an undo log while a command is active.
+A process failure or power loss can interrupt an operation; keep a separate backup.
 
 ## Development
 
-```bash
-# Install dev dependencies
+```sh
 uv sync
-
-# Run tests
-uv run pytest
-
-# Run tests with coverage
 uv run pytest --cov=audiobook_organizer --cov-report=term-missing
-
-# Lint and format
 uv run ruff check src tests
-uv run ruff format src tests
-```
-
-### Pre-commit hooks
-
-The repository uses [pre-commit](https://pre-commit.com/) to run Ruff lint and format checks before each commit.
-
-```bash
+uv run ruff format --check src tests
 uv run pre-commit install
 ```
 
+CI checks Python 3.10 through 3.14.
+Lint errors and format errors fail CI.
+Tests must meet the 80 percent combined statement and branch coverage requirement.
+The pre-commit Ruff version matches the lockfile.
+See [TODO.md](TODO.md) for open engineering work.
+
+Write documentation with [ASD-STE100](https://www.asd-ste100.org/about_STE.html) principles.
+Use short sentences, active instructions, and one name for each technical concept.
+Use software identifiers as technical names.
+
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

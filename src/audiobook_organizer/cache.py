@@ -9,6 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .parser import AudiobookMeta
+from .persistence import atomic_write_text
 from .scanner import ScanResult
 
 CACHE_VERSION = 2
@@ -30,21 +31,22 @@ class ScanCache:
         if not self.path.exists():
             return
         try:
-            raw = json.loads(self.path.read_text())
-            if raw.get("version") == CACHE_VERSION:
-                self._entries = raw.get("entries", {})
-        except (AttributeError, json.JSONDecodeError, OSError, TypeError):
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and raw.get("version") == CACHE_VERSION:
+                entries = raw.get("entries", {})
+                if isinstance(entries, dict):
+                    self._entries = {
+                        key: value for key, value in entries.items() if isinstance(value, dict)
+                    }
+        except (UnicodeError, json.JSONDecodeError, OSError, TypeError):
             self._entries = {}
 
     def save(self) -> None:
         """Write cache to disk (only if changed)."""
         if not self._dirty:
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"version": CACHE_VERSION, "entries": self._entries}
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, separators=(",", ":")))
-        tmp.replace(self.path)
+        atomic_write_text(self.path, json.dumps(payload, separators=(",", ":")))
         self._dirty = False
 
     # ── lookup / store ───────────────────────────────────────────────
@@ -61,7 +63,15 @@ class ScanCache:
             return None
 
         try:
-            return _deserialize(entry["result"])
+            result = _deserialize(entry["result"])
+            if result.path.resolve() != path.resolve():
+                raise ValueError("cached result has a different source path")
+            if any(
+                not source.resolve().is_relative_to(path.resolve())
+                for source in result.source_files
+            ):
+                raise ValueError("cached source file is outside its source directory")
+            return result
         except (KeyError, TypeError, ValueError):
             # Corrupt cache entry — discard it silently
             del self._entries[key]
@@ -120,17 +130,23 @@ def _fingerprint(path: Path) -> str | None:
     # Directory — build a content fingerprint from the recursive listing.
     # This catches added/removed/renamed/modified files anywhere inside.
     h = hashlib.sha1(usedforsecurity=False)
-    for dirpath, dirnames, filenames in os.walk(path):
-        dirnames.sort()
-        for fname in sorted(filenames):
-            fpath = Path(dirpath) / fname
-            try:
+
+    def walk_error(error: OSError) -> None:
+        raise error
+
+    try:
+        for dirpath, dirnames, filenames in os.walk(path, onerror=walk_error):
+            dirnames.sort()
+            h.update(f"{dirpath}:{dirnames}\n".encode("utf-8", "surrogateescape"))
+            for fname in sorted(filenames):
+                fpath = Path(dirpath) / fname
                 fst = fpath.stat()
                 h.update(
                     f"{fpath}:{fst.st_mtime_ns}:{fst.st_size}\n".encode("utf-8", "surrogateescape")
                 )
-            except OSError:
-                pass
+    except OSError:
+        return None
+
     return f"d:{h.hexdigest()}"
 
 
@@ -156,26 +172,47 @@ def _serialize(result: ScanResult) -> dict:
     return d
 
 
+def _metadata(data: dict) -> AudiobookMeta:
+    if not isinstance(data, dict):
+        raise ValueError("metadata must be an object")
+    fields = dict(data)
+    source_path = fields.pop("source_path", None)
+    if source_path is not None and not isinstance(source_path, str):
+        raise ValueError("metadata source path must be a string")
+    for key, value in fields.items():
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"metadata {key} must be a string")
+    for key in ("author", "title"):
+        if not isinstance(fields.get(key), str) or not fields[key]:
+            raise ValueError(f"metadata {key} must be a nonempty string")
+    return AudiobookMeta(**fields, source_path=Path(source_path) if source_path else None)
+
+
 def _deserialize(data: dict) -> ScanResult:
-    meta_d = {**data["meta"]}
-    sp = meta_d.pop("source_path", None)
-    meta = AudiobookMeta(**meta_d)
-    meta.source_path = Path(sp) if sp else None
-
-    tag_meta = None
-    if "tag_meta" in data:
-        tm_d = {**data["tag_meta"]}
-        tm_sp = tm_d.pop("source_path", None)
-        tag_meta = AudiobookMeta(**tm_d)
-        tag_meta.source_path = Path(tm_sp) if tm_sp else None
-
+    if not isinstance(data, dict):
+        raise ValueError("cached result must be an object")
+    if not isinstance(data["path"], str) or not data["path"]:
+        raise ValueError("cached path must be a nonempty string")
+    if data["kind"] not in {"audio_file", "audio_dir", "audio_group", "archive"}:
+        raise ValueError("unknown cached item kind")
+    for key in ("size", "file_count"):
+        value = data.get(key, 0)
+        if type(value) is not int or value < 0:
+            raise ValueError(f"cached {key} must be a nonnegative integer")
+    if type(data.get("has_cover", False)) is not bool:
+        raise ValueError("cached has_cover must be a boolean")
+    sources = data.get("source_files", [])
+    if not isinstance(sources, list) or any(
+        not isinstance(path, str) or not path for path in sources
+    ):
+        raise ValueError("cached source_files must be a list of paths")
     return ScanResult(
         path=Path(data["path"]),
         kind=data["kind"],
-        meta=meta,
+        meta=_metadata(data["meta"]),
         size=data["size"],
         has_cover=data.get("has_cover", False),
         file_count=data.get("file_count", 0),
-        tag_meta=tag_meta,
-        source_files=tuple(Path(path) for path in data.get("source_files", [])),
+        tag_meta=_metadata(data["tag_meta"]) if "tag_meta" in data else None,
+        source_files=tuple(Path(path) for path in sources),
     )

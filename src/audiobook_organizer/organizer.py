@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import shutil
+import tempfile
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import Config
+from .persistence import atomic_write_text
 from .scanner import ScanResult
 
 logger = logging.getLogger(__name__)
@@ -40,12 +45,31 @@ def organize(
     """
     actions: list[_Action] = []
     effective_batch_ts = batch_ts or datetime.now(timezone.utc).isoformat()
+    if items and not dry_run:
+        try:
+            cfg.move_log.parent.mkdir(parents=True, exist_ok=True)
+            if cfg.move_log.exists():
+                text, legacy_encoding = _read_log(cfg.move_log)
+                if legacy_encoding:
+                    atomic_write_text(cfg.move_log, text)
+            with cfg.move_log.open("a", encoding="utf-8"):
+                pass
+        except OSError as exc:
+            logger.error("Cannot write the undo log: %s", exc)
+            return []
 
     for item in items:
         dest_rel = item.meta.dest_relative(author_format=cfg.author_name_format)
         dest_dir = cfg.destination / dest_rel
 
         try:
+            log_size = cfg.move_log.stat().st_size if not dry_run else 0
+            if not dest_dir.resolve().is_relative_to(cfg.destination.resolve()):
+                logger.error("Destination is outside the collection: %s", dest_dir)
+                continue
+            if item.path.is_dir() and dest_dir.resolve().is_relative_to(item.path.resolve()):
+                logger.error("Destination is inside the source directory: %s", dest_dir)
+                continue
             if item.kind == "audio_group":
                 item_actions = _handle_audio_group(item, dest_dir, dry_run=dry_run, copy=copy)
             elif item.kind == "archive" and cfg.auto_extract:
@@ -57,11 +81,17 @@ def organize(
         except OSError as exc:
             logger.error("Failed to organize %s: %s", item.path, exc)
             continue
-        actions.extend(item_actions)
         if not dry_run and item_actions:
-            # Log completed work immediately so a later item failure cannot
-            # leave earlier filesystem changes without an undo record.
-            _log_actions(item_actions, cfg.move_log, batch_ts=effective_batch_ts)
+            try:
+                _log_actions(item_actions, cfg.move_log, batch_ts=effective_batch_ts)
+            except OSError as exc:
+                logger.error("Cannot record completed work; rolling back this item: %s", exc)
+                for action in reversed(item_actions):
+                    _undo_action(action)
+                with cfg.move_log.open("r+b") as stream:
+                    stream.truncate(log_size)
+                continue
+        actions.extend(item_actions)
 
     return [(action.source, action.destination) for action in actions]
 
@@ -85,6 +115,7 @@ def _handle_archive(
         logger.warning("Refusing to extract into existing destination: %s", dest_dir)
         return []
 
+    created_destination = False
     try:
         with zipfile.ZipFile(item.path) as zf:
             # Security: validate all member paths to prevent zip-slip.
@@ -96,7 +127,11 @@ def _handle_archive(
                 # Normalise backslashes so traversal via "foo\..\.." is caught
                 member_normalized = member.replace("\\", "/")
                 # Reject absolute paths and directory traversal
-                if member_normalized.startswith("/") or ".." in member_normalized.split("/"):
+                if (
+                    member_normalized.startswith("/")
+                    or ":" in member_normalized
+                    or ".." in member_normalized.split("/")
+                ):
                     raise ValueError(f"Unsafe zip member path: {member}")
                 # Reject symlink entries (external_attr >> 28 == 0xA for symlinks)
                 if (info.external_attr >> 28) == 0xA:
@@ -105,14 +140,17 @@ def _handle_archive(
                 if not member_path.is_relative_to(resolved_dest):
                     raise ValueError(f"Zip member escapes destination: {member}")
             dest_dir.mkdir(parents=True)
+            created_destination = True
             zf.extractall(dest_dir)
     except zipfile.BadZipFile:
         # Corrupt archive: preserve --copy semantics and keep it as an archive.
-        _remove_path(dest_dir)
+        if created_destination:
+            _remove_path(dest_dir)
         return _handle_single_file(item, dest_dir, dry_run=False, copy=copy)
     except (OSError, RuntimeError, zipfile.LargeZipFile) as exc:
         logger.error("Failed to extract %s: %s", item.path, exc)
-        _remove_path(dest_dir)
+        if created_destination:
+            _remove_path(dest_dir)
         return []
     except ValueError as exc:
         # Unsafe zip member path — refuse to extract or move
@@ -155,13 +193,17 @@ def _handle_directory(
         logger.warning("Refusing to merge into existing destination: %s", dest_dir)
         return []
     dest_dir.parent.mkdir(parents=True, exist_ok=True)
+    created_destination = False
     try:
         if copy:
-            shutil.copytree(item.path, dest_dir, symlinks=True)
+            dest_dir.mkdir()
+            created_destination = True
+            shutil.copytree(item.path, dest_dir, symlinks=True, dirs_exist_ok=True)
         else:
-            shutil.move(item.path, dest_dir)
+            actual = Path(shutil.move(item.path, dest_dir))
+            return [_Action(item.path, actual, "move")]
     except OSError:
-        if item.path.exists():
+        if created_destination:
             _remove_path(dest_dir)
         raise
     return [_Action(item.path, dest_dir, "copy" if copy else "move")]
@@ -207,6 +249,9 @@ def _handle_audio_group(
 
 
 def _move_or_copy(src: Path, dest: Path, *, copy: bool, dry_run: bool) -> Path | None:
+    if src.is_symlink():
+        logger.warning("Refusing to move or copy a symbolic link: %s", src)
+        return None
     if dry_run:
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -230,12 +275,30 @@ def _log_actions(actions: list[_Action], log_path: Path, *, batch_ts: str | None
     """Append move/copy actions to the log for undo support."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     ts = batch_ts or datetime.now(timezone.utc).isoformat()
-    with log_path.open("a") as f:
+    with log_path.open("a", encoding="utf-8") as f:
         for action in actions:
-            f.write(f"{ts}\t{action.operation}\t{action.source}\t{action.destination}\n")
+            f.write(
+                json.dumps(
+                    {
+                        "timestamp": ts,
+                        "operation": action.operation,
+                        "source": str(action.source.resolve()),
+                        "destination": str(action.destination.resolve()),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+        f.flush()
+        os.fsync(f.fileno())
 
 
-def undo_last(cfg: Config, *, dry_run: bool = False) -> list[tuple[Path, Path]]:
+def undo_last(
+    cfg: Config,
+    *,
+    dry_run: bool = False,
+    on_error: Callable[[str], None] | None = None,
+) -> list[tuple[Path, Path]]:
     """Undo the most recent batch of moves from the log.
 
     Returns ``(affected_destination, original_source)`` tuples.
@@ -243,7 +306,8 @@ def undo_last(cfg: Config, *, dry_run: bool = False) -> list[tuple[Path, Path]]:
     if not cfg.move_log.exists():
         return []
 
-    lines = cfg.move_log.read_text().strip().splitlines()
+    text, _legacy_encoding = _read_log(cfg.move_log)
+    lines = text.splitlines()
     if not lines:
         return []
 
@@ -271,21 +335,7 @@ def undo_last(cfg: Config, *, dry_run: bool = False) -> list[tuple[Path, Path]]:
             undone.append((dest, src))
             continue
         try:
-            if operation == "move":
-                if src.exists():
-                    logger.error("Cannot undo move; source already exists: %s", src)
-                    continue
-                src.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(dest, src)
-            elif operation == "copy":
-                _remove_path(dest)
-            elif operation == "extract":
-                if not src.exists():
-                    _rebuild_zip(dest, src)
-                _remove_path(dest)
-            else:
-                logger.error("Unknown move-log operation %r", operation)
-                continue
+            _undo_action(_Action(src, dest, operation))
         except (
             OSError,
             RuntimeError,
@@ -294,26 +344,78 @@ def undo_last(cfg: Config, *, dry_run: bool = False) -> list[tuple[Path, Path]]:
             zipfile.LargeZipFile,
         ) as exc:
             logger.error("Failed to undo %s from %s: %s", operation, dest, exc)
+            if on_error is not None:
+                on_error(f"{dest}: {exc}")
             continue
         completed_indices.add(index)
         undone.append((dest, src))
 
     if not dry_run:
         remaining = [line for index, line in enumerate(lines) if index not in completed_indices]
-        cfg.move_log.write_text("\n".join(remaining) + ("\n" if remaining else ""))
+        atomic_write_text(cfg.move_log, "\n".join(remaining) + ("\n" if remaining else ""))
 
     return undone
 
 
+def _read_log(path: Path) -> tuple[str, bool]:
+    data = path.read_bytes()
+    try:
+        return data.decode("utf-8"), False
+    except UnicodeDecodeError:
+        # Earlier Windows versions wrote with the local Windows-1252 encoding.
+        return data.decode("cp1252"), True
+
+
+def _undo_action(action: _Action) -> None:
+    if action.operation == "move":
+        if action.source.exists() or action.source.is_symlink():
+            raise FileExistsError(f"Cannot restore a source that already exists: {action.source}")
+        action.source.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(action.destination, action.source)
+    elif action.operation == "copy":
+        _remove_path(action.destination)
+    elif action.operation == "extract":
+        if not action.source.exists():
+            _rebuild_zip(action.destination, action.source)
+        _remove_path(action.destination)
+    else:
+        raise ValueError(f"Unknown undo operation: {action.operation}")
+
+
 def _parse_log_line(line: str) -> tuple[str, str, Path, Path] | None:
-    """Parse current four-field logs and legacy three-field move logs."""
+    """Read JSON records and both earlier tab-separated formats."""
+    if line.startswith("{"):
+        try:
+            record = json.loads(line)
+            if (
+                not isinstance(record, dict)
+                or record.get("operation") not in {"move", "copy", "extract"}
+                or any(
+                    not isinstance(record.get(key), str) or not record[key]
+                    for key in ("timestamp", "source", "destination")
+                )
+            ):
+                return None
+            return (
+                record["timestamp"],
+                record["operation"],
+                Path(record["source"]),
+                Path(record["destination"]),
+            )
+        except (ValueError, TypeError):
+            return None
     current_parts = line.split("\t", maxsplit=3)
-    if len(current_parts) == 4 and current_parts[1] in {"move", "copy", "extract"}:
+    if len(current_parts) == 4:
         timestamp, operation, source, destination = current_parts
-        return timestamp, operation, Path(source), Path(destination)
+        if operation in {"move", "copy", "extract"} and all((timestamp, source, destination)):
+            return timestamp, operation, Path(source), Path(destination)
+        if operation in {"move", "copy", "extract"} or not (
+            "/" in operation or "\\" in operation or Path(operation).suffix
+        ):
+            return None
 
     legacy_parts = line.split("\t", maxsplit=2)
-    if len(legacy_parts) == 3:
+    if len(legacy_parts) == 3 and all(legacy_parts):
         timestamp, source, destination = legacy_parts
         return timestamp, "move", Path(source), Path(destination)
 
@@ -331,13 +433,22 @@ def _remove_path(path: Path) -> None:
 def _rebuild_zip(extracted_dir: Path, archive_path: Path) -> None:
     """Recreate a deleted source zip before removing its extracted destination."""
     archive_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = archive_path.with_suffix(f"{archive_path.suffix}.tmp")
+    temporary: Path | None = None
     try:
-        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for child in sorted(extracted_dir.rglob("*")):
-                if child.is_file():
-                    zf.write(child, child.relative_to(extracted_dir))
+        with tempfile.NamedTemporaryFile(
+            dir=archive_path.parent,
+            prefix=f".{archive_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for child in sorted(extracted_dir.rglob("*")):
+                    if child.is_file():
+                        archive.write(child, child.relative_to(extracted_dir))
+            stream.flush()
+            os.fsync(stream.fileno())
         temporary.replace(archive_path)
-    except (OSError, RuntimeError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile):
-        temporary.unlink(missing_ok=True)
-        raise
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)

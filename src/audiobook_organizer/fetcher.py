@@ -43,7 +43,7 @@ def _odmpy_cmd() -> list[str]:
             return [sys.executable, "-m", "odmpy"]
     except (OSError, subprocess.SubprocessError):
         pass
-    raise FileNotFoundError("odmpy is not installed. Install it with:  uv pip install .")
+    raise FileNotFoundError('odmpy is not installed. Install it with: uv pip install ".[libby]"')
 
 
 def _settings_dir(libby_settings: Path) -> Path:
@@ -117,7 +117,7 @@ def list_loans(settings_folder: Path) -> list[LibbyLoan]:
         if not loans_file.exists():
             return []
 
-        raw = json.loads(loans_file.read_text())
+        raw = json.loads(loans_file.read_text(encoding="utf-8"))
 
     if not isinstance(raw, list):
         return []
@@ -128,13 +128,21 @@ def list_loans(settings_folder: Path) -> list[LibbyLoan]:
         if not isinstance(entry, dict):
             continue
         # Only include audiobook loans that can be downloaded
-        formats = [f.get("id", "") for f in entry.get("formats", [])]
+        format_data = entry.get("formats")
+        if not isinstance(format_data, list):
+            continue
+        formats = [f.get("id", "") for f in format_data if isinstance(f, dict)]
         if "audiobook-mp3" not in formats:
             continue
+        identifier = entry.get("id")
+        if type(identifier) not in {str, int} or not str(identifier).strip():
+            continue
         idx += 1
-        title = entry.get("title", "Unknown Title")
-        author = entry.get("firstCreatorName", "Unknown Author")
-        loan_id = str(entry.get("id", ""))
+        title = entry.get("title")
+        author = entry.get("firstCreatorName")
+        title = title if isinstance(title, str) and title.strip() else "Unknown Title"
+        author = author if isinstance(author, str) and author.strip() else "Unknown Author"
+        loan_id = str(identifier)
         results.append(LibbyLoan(id=loan_id, title=title, author=author, index=idx))
 
     return results

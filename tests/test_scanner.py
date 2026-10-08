@@ -1016,7 +1016,10 @@ class TestSplitFlatAlbumDir:
             return AudiobookMeta(author="Author B", title="Book Two")
 
         with (
-            patch("audiobook_organizer.scanner._read_album_name", side_effect=lambda p: album_map.get(Path(p))),
+            patch(
+                "audiobook_organizer.scanner._read_album_name",
+                side_effect=lambda p: album_map.get(Path(p)),
+            ),
             patch("audiobook_organizer.scanner.parse_audio_tags", side_effect=fake_tags),
         ):
             results = _split_flat_album_dir(flat, cfg)
@@ -1040,7 +1043,10 @@ class TestSplitFlatAlbumDir:
             return AudiobookMeta(author="Author", title="Book One")
 
         with (
-            patch("audiobook_organizer.scanner._read_album_name", side_effect=lambda p: album_map.get(Path(p))),
+            patch(
+                "audiobook_organizer.scanner._read_album_name",
+                side_effect=lambda p: album_map.get(Path(p)),
+            ),
             patch("audiobook_organizer.scanner.parse_audio_tags", side_effect=fake_tags),
         ):
             results = _split_flat_album_dir(flat, cfg)
@@ -1063,7 +1069,10 @@ class TestSplitFlatAlbumDir:
             return AudiobookMeta(author="Author B", title="Beta")
 
         with (
-            patch("audiobook_organizer.scanner._read_album_name", side_effect=lambda p: album_map.get(Path(p))),
+            patch(
+                "audiobook_organizer.scanner._read_album_name",
+                side_effect=lambda p: album_map.get(Path(p)),
+            ),
             patch("audiobook_organizer.scanner.parse_audio_tags", side_effect=fake_tags),
         ):
             results = _split_flat_album_dir(flat, cfg)
@@ -1087,7 +1096,10 @@ class TestSplitFlatAlbumDir:
             return AudiobookMeta(author="Unknown Author", title="Some Book")
 
         with (
-            patch("audiobook_organizer.scanner._read_album_name", side_effect=lambda p: album_map.get(Path(p))),
+            patch(
+                "audiobook_organizer.scanner._read_album_name",
+                side_effect=lambda p: album_map.get(Path(p)),
+            ),
             patch("audiobook_organizer.scanner.parse_audio_tags", side_effect=fake_tags),
         ):
             results = _split_flat_album_dir(flat, cfg)

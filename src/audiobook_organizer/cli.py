@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import platform
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,10 +11,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypeVar
 
 import click
+import yaml
 from rich.console import Console
+from rich.padding import Padding
 from rich.table import Table
+from rich.text import Text
 
 from . import __version__
 from .analyzer import (
@@ -26,6 +29,9 @@ from .analyzer import (
     are_probable_duplicates,
 )
 from .cache import ScanCache
+from .cleanup import CleanupResult as _CleanupResult
+from .cleanup import delete_sources
+from .cleanup import unique_paths as _unique_paths
 from .config import DEFAULT_CONFIG_PATH, Config
 from .fetcher import (
     FetchResult,
@@ -57,6 +63,76 @@ from .parser import (
 from .scanner import ScanResult, fold_accents, scan_collection, scan_sources
 
 console = Console()
+_FetchValue = TypeVar("_FetchValue")
+
+
+def _fetch_call(function: Callable[..., _FetchValue], *args, **kwargs) -> _FetchValue:
+    try:
+        return function(*args, **kwargs)
+    except (OSError, subprocess.SubprocessError, ValueError, RuntimeError) as exc:
+        raise click.ClickException(f"Libby operation failed: {exc}") from exc
+
+
+def _quantity(count: int, noun: str) -> str:
+    plural = f"{noun[:-1]}ies" if noun.endswith("y") else f"{noun}s"
+    return f"{count} {noun if count == 1 else plural}"
+
+
+def _print_fields(rows: list[tuple[str, str]]) -> None:
+    """Render literal values without borders or terminal-wide padding."""
+    if console.width < 60:
+        for label, value in rows:
+            console.print(Text(label, "dim"))
+            console.print(Padding(Text(value), (0, 0, 0, 2)))
+        return
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="dim", no_wrap=True)
+    table.add_column(overflow="fold")
+    for label, value in rows:
+        table.add_row(Text(label), Text(value))
+    console.print(table)
+
+
+def _print_book(
+    index: int,
+    item: ScanResult,
+    label: str,
+    style: str,
+    *,
+    verbose: bool = False,
+    cfg: Config | None = None,
+) -> None:
+    """Keep status and identity readable at both wide and narrow terminal widths."""
+    table = Table.grid(padding=(0, 1), expand=True)
+    table.add_column(width=3, justify="right", style="dim")
+    table.add_column(width=9, style=style)
+    table.add_column(ratio=1, overflow="fold")
+    identity = Text(item.meta.title, style="bold")
+    if console.width >= 90:
+        identity.append(f" — {item.meta.author}")
+        table.add_column(justify="right", no_wrap=True, style="dim")
+        table.add_row(str(index), label, identity, _human_size(item.size))
+    else:
+        identity.append(f"\n{item.meta.author} · {_human_size(item.size)}", style="dim")
+        table.add_row(str(index), label, identity)
+    console.print(table)
+    if item.meta.series:
+        console.print(Text(f"    Series: {item.meta.series} #{item.meta.sequence or '?'}", "dim"))
+    if verbose and cfg is not None:
+        console.print(
+            Text(f"    To: {item.meta.dest_relative(author_format=cfg.author_name_format)}", "blue")
+        )
+
+
+def _print_found(items: list[ScanResult], counters: _ScanCounters) -> None:
+    console.print()
+    console.print(
+        Text.assemble(
+            (f"Found {_quantity(len(items), 'audiobook')}", "bold"),
+            f" · {counters.new_count} new · {counters.exist_count} already in collection"
+            f" · {_human_size(sum(item.size for item in items))}",
+        )
+    )
 
 
 def _human_size(n: int) -> str:
@@ -81,6 +157,9 @@ class _ScanCounters:
 def _make_hit_callback(
     cfg: Config,
     counters: _ScanCounters,
+    *,
+    display: bool = True,
+    verbose: bool = False,
 ) -> Callable[[ScanResult], None]:
     """Build a scan-hit callback that prints each discovered book."""
     author_fmt = cfg.author_name_format
@@ -92,22 +171,20 @@ def _make_hit_callback(
         counters.count += 1
         if result.source_dir != counters.current_source_dir:
             counters.current_source_dir = result.source_dir
-            console.print(f"\n[bold cyan]\u2500\u2500 {result.source_dir} \u2500\u2500[/bold cyan]")
+            if display:
+                console.print()
+                console.print(Text.assemble(("Source: ", "dim"), str(result.source_dir)))
         dest_rel = result.meta.dest_relative(author_format=author_fmt)
         dest_full = cfg.destination / dest_rel
         exists = dest_full.exists()
         if exists:
             counters.exist_count += 1
-            tag = "[yellow] EXISTS [/yellow]"
+            label, style = "EXISTS", "yellow"
         else:
             counters.new_count += 1
-            tag = "[green]    NEW [/green]"
-        series = ""
-        if result.meta.series:
-            seq = result.meta.sequence or "?"
-            series = f"  [dim]({result.meta.series} #{seq})[/dim]"
+            label, style = "NEW", "green"
         author = result.meta.author
-        warn = ""
+        warnings: list[str] = []
         if author != "Unknown Author" and " " not in author and "," not in author:
             # Suppress warning for known canonical mononyms (Xenophon, Molière, Homer…)
             # Use accent-folded key so resolved forms like "Molière" still match "moliere"
@@ -118,9 +195,9 @@ def _make_hit_callback(
                 author_low = author.lower()
                 match = known_authors.get(author_low)
                 if match:
-                    warn = f"  [yellow]\u26a0 single-name author (possible match: {match})[/yellow]"
+                    warnings.append(f"single-name author (possible match: {match})")
                 else:
-                    warn = "  [yellow]\u26a0 single-name author[/yellow]"
+                    warnings.append("single-name author")
 
         # Track full-name authors by surname for single-name matching.
         if " " in author or "," in author:
@@ -137,17 +214,13 @@ def _make_hit_callback(
             if are_probable_duplicates(result.meta, previous)
         ]
         if near_dupes:
-            dup_warn = f"  [yellow]\u26a0 possible duplicate of: {near_dupes[0]}[/yellow]"
-            warn = f"{warn}{dup_warn}" if warn else dup_warn
+            warnings.append(f"possible duplicate of: {near_dupes[0]}")
         books_by_author.setdefault(author_key, []).append(result.meta)
 
-        console.print(
-            f"{tag} [dim]{counters.count:>3}.[/dim]"
-            f" [bold]{author}[/bold] \u2014"
-            f" {result.meta.title}{series}"
-            f"  [dim]{_human_size(result.size)}[/dim]"
-            f"  [blue]\u2192 {dest_rel}[/blue]{warn}"
-        )
+        if display:
+            _print_book(counters.count, result, label, style, verbose=verbose, cfg=cfg)
+        for warning in warnings:
+            console.print(Text(f"    Warning ({counters.count}): {warning}", "yellow"))
 
     return _on_hit
 
@@ -158,7 +231,7 @@ def _print_missing_dirs(missing_dirs: list[Path]) -> None:
         return
     console.print()
     for d in missing_dirs:
-        console.print(f"[red bold]\u26a0 Source directory not found:[/red bold] {d}")
+        console.print(Text.assemble(("Warning: Source directory not found: ", "red bold"), str(d)))
         hint = _check_wsl_mount(d)
         if hint:
             console.print(f"[yellow]  {hint}[/yellow]")
@@ -256,7 +329,7 @@ def _check_wsl_mount(path: Path) -> str | None:
 
 def _require_dir(path: Path, label: str = "Directory") -> bool:
     """Print an informative error if *path* doesn't exist. Returns True if OK."""
-    if path.exists():
+    if path.is_dir():
         return True
     hint = _check_wsl_mount(path)
     if hint:
@@ -280,12 +353,14 @@ def _require_dir(path: Path, label: str = "Directory") -> bool:
 def cli(ctx: click.Context, config_path: str | None) -> None:
     """aborg — scan, organize, and manage your collection."""
     ctx.ensure_object(dict)
-    cfg_path = Path(config_path) if config_path else None
+    cfg_path = Path(config_path).expanduser() if config_path else None
+    ctx.obj["cfg_path"] = cfg_path or DEFAULT_CONFIG_PATH
     try:
         ctx.obj["cfg"] = Config.load(cfg_path)
     except FileNotFoundError:
         ctx.obj["cfg"] = None
-        ctx.obj["cfg_path"] = cfg_path or DEFAULT_CONFIG_PATH
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        raise click.ClickException(f"Cannot load config {ctx.obj['cfg_path']}: {exc}") from exc
 
 
 def _require_cfg(ctx: click.Context) -> Config:
@@ -303,6 +378,9 @@ def _run_scan(
     cfg: Config,
     *,
     use_cache: bool,
+    show_hits: bool = True,
+    verbose: bool = False,
+    heading: str = "Scan",
 ) -> tuple[list[ScanResult], list[Path], _ScanCounters] | None:
     """Run the common scan-and-report logic shared by `scan` and `org`.
 
@@ -311,20 +389,20 @@ def _run_scan(
     """
     scan_cache = ScanCache() if use_cache else None
 
-    console.print(f"[dim]Scanning: {', '.join(str(d) for d in cfg.source_dirs)}[/dim]")
-    console.print(f"[dim]Destination: {cfg.destination}[/dim]\n")
+    console.print(heading, style="bold", markup=False)
+    _print_fields([("Destination", str(cfg.destination))])
 
     counters = _ScanCounters()
 
     with console.status("[bold green]Scanning…[/bold green]", spinner="dots") as status:
 
         def _on_progress(msg: str) -> None:
-            status.update(f"[bold green]Scanning:[/bold green] {msg}")
+            status.update(Text.assemble(("Scanning: ", "bold green"), msg))
 
         items, missing_dirs = scan_sources(
             cfg,
             on_progress=_on_progress,
-            on_hit=_make_hit_callback(cfg, counters),
+            on_hit=_make_hit_callback(cfg, counters, display=show_hits, verbose=verbose),
             cache=scan_cache,
         )
 
@@ -351,55 +429,56 @@ def _run_scan(
 @cli.command()
 @click.option("-d", "--dir", "extra_dirs", multiple=True, help="Additional directories to scan.")
 @click.option("--table", is_flag=True, help="Show results in a table instead of streaming.")
+@click.option("-v", "--verbose", is_flag=True, help="Show destination paths for each audiobook.")
 @click.option("--cache", is_flag=True, help="Use cached results from previous scans.")
 @click.pass_context
-def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, cache: bool) -> None:
+def scan(
+    ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, verbose: bool, cache: bool
+) -> None:
     """Scan source directories and show discovered audiobook files."""
     cfg = _require_cfg(ctx)
     for d in extra_dirs:
         cfg.source_dirs.append(Path(d).expanduser())
 
-    result = _run_scan(cfg, use_cache=cache)
+    result = _run_scan(cfg, use_cache=cache, show_hits=not table, verbose=verbose)
     if result is None:
         return
     items, missing_dirs, counters = result
 
-    total_size = sum(i.size for i in items)
-    authors = len({i.meta.author for i in items})
-
-    console.print()
-    summary = Table(title="Scan Summary", show_header=False)
-    summary.add_column("Metric", style="bold")
-    summary.add_column("Value", justify="right")
-    summary.add_row("Found", f"{len(items)} audiobook(s)")
-    summary.add_row("New", f"[green]{counters.new_count}[/green]")
-    summary.add_row("Already in collection", f"[yellow]{counters.exist_count}[/yellow]")
-    summary.add_row("Authors", str(authors))
-    summary.add_row("Total size", _human_size(total_size))
-    if missing_dirs:
-        summary.add_row("Missing source dirs", f"[red]{len(missing_dirs)}[/red]")
-    console.print(summary)
-
     if table:
-        tbl = Table(show_lines=True)
+        tbl = Table(box=None, padding=(0, 1))
         tbl.add_column("#", style="dim", width=3)
-        tbl.add_column("Author", style="green", no_wrap=True)
-        tbl.add_column("Title", style="bold", no_wrap=True)
-        tbl.add_column("Series", no_wrap=True)
+        tbl.add_column("Status")
+        tbl.add_column("Author", style="green")
+        tbl.add_column("Title", style="bold")
         tbl.add_column("Size", justify="right", no_wrap=True)
-        tbl.add_column("Dest path", style="blue")
+        if verbose:
+            tbl.add_column("Dest path", style="blue")
 
         for i, item in enumerate(items, 1):
-            tbl.add_row(
-                str(i),
-                item.meta.author,
-                item.meta.title,
-                f"{item.meta.series} #{item.meta.sequence}" if item.meta.series else "",
-                _human_size(item.size),
-                str(item.meta.dest_relative(author_format=cfg.author_name_format)),
-            )
+            dest_rel = item.meta.dest_relative(author_format=cfg.author_name_format)
+            exists = (cfg.destination / dest_rel).exists()
+            title = item.meta.title
+            if item.meta.series:
+                title += f" ({item.meta.series} #{item.meta.sequence or '?'})"
+            row = [
+                Text(str(i)),
+                Text("EXISTS" if exists else "NEW", "yellow" if exists else "green"),
+                Text(item.meta.author),
+                Text(title),
+                Text(_human_size(item.size)),
+            ]
+            if verbose:
+                row.append(Text(str(dest_rel)))
+            tbl.add_row(*row)
 
         console.print(tbl)
+
+    _print_found(items, counters)
+    if missing_dirs:
+        console.print(
+            f"Skipped {_quantity(len(missing_dirs), 'missing source directory')}.", style="yellow"
+        )
 
 
 # ── organize ─────────────────────────────────────────────────────────────
@@ -410,7 +489,10 @@ def scan(ctx: click.Context, extra_dirs: tuple[str, ...], table: bool, cache: bo
 @click.option("--dest", type=click.Path(), default=None, help="Override destination directory.")
 @click.option("--dry-run", is_flag=True, help="Show what would happen without making changes.")
 @click.option("--copy", is_flag=True, help="Copy instead of move.")
-@click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt.")
+@click.option(
+    "-y", "--yes", is_flag=True, help="Confirm planned actions; leave optional cleanup alone."
+)
+@click.option("-v", "--verbose", is_flag=True, help="Show destination paths for each audiobook.")
 @click.option("--cache", is_flag=True, help="Use cached results from previous scans.")
 @click.option(
     "--clean-exists",
@@ -427,6 +509,7 @@ def org(
     yes: bool,
     cache: bool,
     clean_exists: bool,
+    verbose: bool,
 ) -> None:
     """Scan source directories and organize audiobooks into the destination."""
     cfg = _require_cfg(ctx)
@@ -442,114 +525,245 @@ def org(
         )
         raise SystemExit(1)
 
-    result = _run_scan(cfg, use_cache=cache)
+    result = _run_scan(
+        cfg,
+        use_cache=cache,
+        verbose=verbose or dry_run,
+        heading="Organize preview (dry run)" if dry_run else "Organize",
+    )
     if result is None:
         return
     items, missing_dirs, counters = result
+    _print_found(items, counters)
 
-    total_size = sum(i.size for i in items)
-    authors = len({i.meta.author for i in items})
-
-    prefix = "DRY RUN — " if dry_run else ""
-    prompt = f"\n{prefix}Organize {counters.new_count} new item(s)?"
-    if not dry_run and not yes and counters.new_count == 0 and not clean_exists:
-        console.print("[yellow]Nothing new to organize.[/yellow]")
-        return
-    if not dry_run and not yes and not click.confirm(prompt):
-        console.print("[yellow]Aborted.[/yellow]")
-        return
-
-    if not dry_run:
-        dest_root = cfg.destination
-        if not dest_root.exists():
-            console.print(
-                f"[red]Error:[/red] Destination does not exist: [bold]{dest_root}[/bold]\n"
-                f"  Create it or check your config."
+    # Freeze which destinations already existed before this batch. A failed or
+    # partial operation must never make another source eligible for deletion.
+    existing = {
+        i
+        for i, item in enumerate(items, 1)
+        if (
+            cfg.destination
+            / item.meta.dest_relative(
+                author_format=cfg.author_name_format,
             )
-            raise SystemExit(1)
+        ).exists()
+    }
+    new_count = len(items) - len(existing)
+    exist_sources = [
+        source
+        for i, item in enumerate(items, 1)
+        if i in existing
+        for source in (item.source_files or [item.path])
+    ]
+    stored_destinations = {
+        source: cfg.destination / item.meta.dest_relative(author_format=cfg.author_name_format)
+        for i, item in enumerate(items, 1)
+        if i in existing
+        for source in (item.source_files or [item.path])
+    }
+    deletion_paths = _unique_paths(exist_sources) if clean_exists else []
+    actions = []
+    if new_count:
+        actions.append(f"{'Copy' if copy else 'Organize'} {_quantity(new_count, 'new audiobook')}")
+    if deletion_paths:
+        actions.append(
+            f"delete {_quantity(len(deletion_paths), 'source path')} already in collection"
+        )
+        console.print("Source paths to delete:", style="bold")
+        for path in deletion_paths:
+            console.print(Text(f"  {_source_label(path, cfg)}"))
+        console.print(
+            "Deletion is permanent. Each source must match its stored data before deletion.",
+            style="yellow",
+        )
+    if not actions:
+        console.print("Nothing new to organize. Source files kept.", style="dim")
+        return
+    prompt = " and ".join(actions)
+    prompt = prompt[0].upper() + prompt[1:]
+    if dry_run or yes:
+        console.print(Text(f"Plan: {prompt}."))
+
+    # Validate before asking the user to approve an operation we cannot perform.
+    if not dry_run and new_count:
+        dest_root = cfg.destination
+        if not dest_root.is_dir():
+            console.print(Text(f"Error: Destination does not exist: {dest_root}", "red"))
+            console.print("Create it or check your config.")
+            ctx.exit(1)
         try:
             with tempfile.NamedTemporaryFile(dir=dest_root):
                 pass
         except OSError:
-            console.print(
-                f"[red]Error:[/red] Destination is not writable: [bold]{dest_root}[/bold]\n"
-                "  If this is a network mount, check that it is mounted"
-                " with read-write permissions.\n"
-                f"  Hint: [dim]mount | grep {dest_root.name}[/dim]"
-            )
-            raise SystemExit(1)  # noqa: B904
+            console.print(Text(f"Error: Destination is not writable: {dest_root}", "red"))
+            console.print("Check directory permissions and, for a network drive, its connection.")
+            ctx.exit(1)
 
-    console.print()
-    verb = "Would move" if dry_run else ("Copying" if copy else "Moving")
+    if not dry_run and not yes and not click.confirm(f"{prompt}?"):
+        console.print("Cancelled. No files changed.", style="dim")
+        return
+
     done = 0
-    skipped = 0
+    skipped = len(existing)
     failed = 0
     moved_sources: list[Path] = []
-    exist_sources: list[Path] = []
-    # All items organized in one CLI invocation share a timestamp so undo
-    # can treat them as a single batch.
+    retained_archives = 0
     batch_ts = datetime.now(timezone.utc).isoformat()
-    with console.status(f"[bold green]{verb}…[/bold green]", spinner="dots") as status:
-        for i, item in enumerate(items, 1):
-            dest_full = cfg.destination / item.meta.dest_relative(
-                author_format=cfg.author_name_format,
-            )
-            item_sources = list(item.source_files) or [item.path]
-            if dest_full.exists():
-                skipped += 1
-                exist_sources.extend(item_sources)
-                continue
-            status.update(f"[bold green]{verb}:[/bold green] {item.meta.title}")
-            result = organize([item], cfg, dry_run=dry_run, copy=copy, batch_ts=batch_ts)
-            if result:
-                completed_sources = [source for source, _destination in result]
+    verb = "Previewing" if dry_run else ("Copying" if copy else "Organizing")
+    if new_count:
+        console.print()
+        with console.status(f"[bold green]{verb}…[/bold green]", spinner="dots") as status:
+            for i, item in enumerate(items, 1):
+                if i in existing:
+                    continue
+                dest_full = cfg.destination / item.meta.dest_relative(
+                    author_format=cfg.author_name_format,
+                )
+                if dest_full.exists():
+                    skipped += 1
+                    _print_book(i, item, "SKIPPED", "yellow")
+                    console.print(
+                        "    Destination appeared since scanning; source kept.", style="yellow"
+                    )
+                    continue
+                status.update(Text.assemble((f"{verb}: ", "bold green"), item.meta.title))
+                try:
+                    completed = organize([item], cfg, dry_run=dry_run, copy=copy, batch_ts=batch_ts)
+                except (OSError, RuntimeError) as exc:
+                    raise click.ClickException(
+                        f"Cannot complete or roll back {item.path}: {exc}"
+                    ) from exc
+                if not completed:
+                    failed += 1
+                    _print_book(i, item, "FAILED", "red")
+                    console.print(
+                        "    Could not organize this audiobook. Review the error above.",
+                        style="red",
+                    )
+                    continue
+                completed_sources = [source for source, _destination in completed]
                 moved_sources.extend(completed_sources)
+                stored_destinations.update(completed)
                 if item.source_files and len(completed_sources) != len(item.source_files):
                     failed += 1
+                    _print_book(i, item, "PARTIAL", "red")
                     console.print(
-                        f"  [red]partial[/red] [dim]{i}.[/dim]"
-                        f" {item.meta.author} — {item.meta.title}"
-                        f" ({len(completed_sources)}/{len(item.source_files)} files)"
+                        f"    {len(completed_sources)}/{len(item.source_files)} files completed.",
+                        style="red",
                     )
                 else:
                     done += 1
                     if not dry_run:
-                        console.print(
-                            f"  [green]✓[/green] [dim]{i}.[/dim] {item.meta.author} — {item.meta.title}"
-                        )
-            else:
-                failed += 1
+                        _print_book(i, item, "COPIED" if copy else "ORGANIZED", "green")
+                        if (
+                            item.kind == "archive"
+                            and item.path.suffix.lower() == ".zip"
+                            and cfg.auto_extract
+                            and item.path.exists()
+                            and not copy
+                        ):
+                            retained_archives += 1
 
-    verb_past = "Would organize" if dry_run else ("Copied" if copy else "Moved")
-
-    console.print()
-    summary = Table(title="Organize Summary", show_header=False)
-    summary.add_column("Metric", style="bold")
-    summary.add_column("Value", justify="right")
-    summary.add_row("Found", f"{len(items)} audiobook(s)")
-    summary.add_row(verb_past, f"[green]{done}[/green]")
-    summary.add_row("Already in collection", f"[yellow]{skipped}[/yellow]")
-    if failed:
-        summary.add_row("Failed", f"[red]{failed}[/red]")
-    summary.add_row("Authors", str(authors))
-    summary.add_row("Total size", _human_size(total_size))
-    if missing_dirs:
-        summary.add_row("Missing source dirs", f"[red]{len(missing_dirs)}[/red]")
-    console.print(summary)
-
-    if dry_run and clean_exists and exist_sources:
-        console.print()
-        console.print("[bold]Would delete EXISTS source(s):[/bold]")
-        for p in sorted(set(exist_sources), key=lambda x: len(x.parts), reverse=True):
-            console.print(f"  [dim]•[/dim] [red]{p}[/red]")
-
-    if not dry_run and (moved_sources or exist_sources):
-        _offer_source_cleanup(
+    cleanup = _CleanupResult()
+    if dry_run and deletion_paths:
+        cleanup = _delete_sources(
+            deletion_paths, cfg, destinations=stored_destinations, dry_run=True
+        )
+    elif not dry_run:
+        cleanup = _offer_source_cleanup(
             moved_sources,
             cfg,
             copy=copy,
             exist_sources=exist_sources,
             auto_clean_exists=clean_exists,
+            prompt=not yes,
+            destinations=stored_destinations,
+        )
+
+    # The final result includes cleanup, so it is the last thing the user sees.
+    console.print()
+    console.print("Preview complete — no files changed." if dry_run else "Result", style="bold")
+    parts = []
+    if new_count:
+        verb_past = (
+            ("Would copy" if copy else "Would organize")
+            if dry_run
+            else ("Copied" if copy else "Organized")
+        )
+        parts.append(f"{verb_past} {_quantity(done, 'audiobook')}")
+    if skipped:
+        parts.append(f"{skipped} already in collection")
+    if dry_run and deletion_paths:
+        parts.append(f"Would delete {_quantity(cleanup.removed, 'source path')}")
+    elif cleanup.removed:
+        parts.append(f"Deleted {_quantity(cleanup.removed, 'source path')}")
+    if failed:
+        parts.append(f"{failed} failed or partial")
+    if cleanup.failed:
+        parts.append(f"{cleanup.failed} cleanup failed")
+    if cleanup.skipped:
+        parts.append(f"{cleanup.skipped} cleanup skipped")
+    console.print(
+        " · ".join(parts) + ".",
+        style="red" if failed or cleanup.failed or cleanup.skipped else "green",
+        markup=False,
+    )
+    if retained_archives:
+        console.print(
+            f"Kept {_quantity(retained_archives, 'source archive')}.",
+            style="dim",
+        )
+        if not cfg.delete_after_extract:
+            console.print(
+                "Set delete_after_extract: true in config to remove archives after extraction.",
+                style="dim",
+            )
+    if missing_dirs:
+        console.print(
+            f"Skipped {_quantity(len(missing_dirs), 'missing source directory')}.", style="yellow"
+        )
+    if done and not dry_run:
+        console.print("Undo organizing: aborg undo. Source cleanup cannot be undone.", style="dim")
+    if failed or cleanup.failed or cleanup.skipped:
+        ctx.exit(1)
+
+
+def _source_label(path: Path, cfg: Config) -> str:
+    """Avoid repeating the source root when a single source gives clear context."""
+    if len(cfg.source_dirs) == 1:
+        try:
+            return str(path.relative_to(cfg.source_dirs[0]))
+        except ValueError:
+            pass
+    return str(path)
+
+
+def _delete_sources(
+    paths: list[Path],
+    cfg: Config,
+    *,
+    destinations: dict[Path, Path] | None = None,
+    empty_dirs: set[Path] | None = None,
+    dry_run: bool = False,
+) -> _CleanupResult:
+    def report(path: Path, status: str, reason: str) -> None:
+        if status == "removed":
+            verb = "Would delete" if dry_run else "Deleted"
+            console.print(Text(f"  {verb}: {_source_label(path, cfg)}", "green"))
+        else:
+            label = "Failed to delete" if status == "failed" else "Skipped protected path"
+            console.print(
+                Text(f"  {label}: {path}: {reason}", "red" if status == "failed" else "yellow")
+            )
+
+    with console.status("Verifying source copies…", spinner="dots"):
+        return delete_sources(
+            paths,
+            cfg,
+            destinations=destinations,
+            empty_dirs=empty_dirs,
+            dry_run=dry_run,
+            on_result=report,
         )
 
 
@@ -560,91 +774,74 @@ def _offer_source_cleanup(
     copy: bool,
     exist_sources: list[Path] | None = None,
     auto_clean_exists: bool = False,
-) -> None:
-    """After organizing, offer to clean up source paths."""
+    prompt: bool = True,
+    destinations: dict[Path, Path] | None = None,
+) -> _CleanupResult:
+    """Clean explicitly requested sources, then offer optional source cleanup."""
+    result = _CleanupResult()
     cleanup_paths: list[Path] = []
     source_dir_resolved = {sd.resolve() for sd in cfg.source_dirs}
-
-    # Sources whose destination already existed — safe to remove
-    exists_cleanup: list[Path] = []
-    for src in exist_sources or []:
-        if src.exists():
-            exists_cleanup.append(src)
-
+    empty_dirs: set[Path] = set()
+    exists_cleanup = _unique_paths([src for src in exist_sources or [] if src.exists()])
     if auto_clean_exists and exists_cleanup:
-        # Automatically remove EXISTS sources without prompting
-        exists_cleanup.sort(key=lambda p: len(p.parts), reverse=True)
-        console.print("\n[bold]Deleting EXISTS source(s):[/bold]")
-        removed = 0
-        for p in exists_cleanup:
-            try:
-                if p.is_symlink():
-                    console.print(f"  [yellow]skip symlink:[/yellow] {p}")
-                    continue
-                if p.is_dir():
-                    shutil.rmtree(p)
-                elif p.is_file():
-                    p.unlink()
-                removed += 1
-                console.print(f"  [red]✗[/red] {p}")
-            except OSError as exc:
-                console.print(f"  [red]Error:[/red] {p}: {exc}")
-        console.print(f"[green]Cleaned up {removed} path(s).[/green]")
+        console.print()
+        console.print("Removing sources already in collection", style="bold")
+        result = _delete_sources(exists_cleanup, cfg, destinations=destinations)
     else:
         cleanup_paths.extend(exists_cleanup)
 
+    if not prompt:
+        return result
     if copy:
-        # For copies, offer to delete the originals
-        for src in moved_sources:
-            if src.exists():
-                cleanup_paths.append(src)
+        cleanup_paths.extend(src for src in moved_sources if src.exists())
     else:
-        # For moves, find empty parent directories left behind
         seen: set[Path] = set()
         planned: set[Path] = set()
         for src in moved_sources:
             parent = src.parent
-            while parent.exists() and parent.resolve() not in source_dir_resolved:
+            while (
+                parent.exists()
+                and parent.resolve() not in source_dir_resolved
+                and any(parent.resolve().is_relative_to(root) for root in source_dir_resolved)
+            ):
                 if parent in seen:
                     break
                 seen.add(parent)
-                children = set(parent.iterdir()) - planned
+                try:
+                    children = set(parent.iterdir()) - planned
+                except OSError as exc:
+                    result.failed += 1
+                    console.print(
+                        Text(f"Could not inspect cleanup directory {parent}: {exc}", "red")
+                    )
+                    break
                 if parent.is_dir() and not children:
                     cleanup_paths.append(parent)
                     planned.add(parent)
+                    empty_dirs.add(parent)
                     parent = parent.parent
                 else:
                     break
 
     if not cleanup_paths:
-        return
-
-    # Sort deepest first so nested dirs are removed before parents
-    cleanup_paths.sort(key=lambda p: len(p.parts), reverse=True)
-
-    action = "Delete copied originals" if copy else "Clean up source files"
-    console.print(f"\n[bold]{action}[/bold]")
-    for p in cleanup_paths:
-        console.print(f"  [dim]•[/dim] {p}")
-
-    if not click.confirm(f"\nClean up {len(cleanup_paths)} path(s)?"):
-        return
-
-    removed = 0
-    for p in cleanup_paths:
-        try:
-            if p.is_symlink():
-                console.print(f"  [yellow]skip symlink:[/yellow] {p}")
-                continue
-            if p.is_dir():
-                shutil.rmtree(p)
-            elif p.is_file():
-                p.unlink()
-            removed += 1
-            console.print(f"  [red]✗[/red] {p}")
-        except OSError as exc:
-            console.print(f"  [red]Error:[/red] {p}: {exc}")
-    console.print(f"[green]Cleaned up {removed} path(s).[/green]")
+        return result
+    cleanup_paths = _unique_paths(cleanup_paths)
+    console.print()
+    console.print("Optional source cleanup", style="bold")
+    for path in cleanup_paths:
+        console.print(Text(f"  {_source_label(path, cfg)}"))
+    console.print(
+        "Deletion is permanent. Organize undo does not restore these paths.", style="yellow"
+    )
+    if exists_cleanup and not auto_clean_exists:
+        console.print("Each source must match its stored data before deletion.", style="yellow")
+    if not click.confirm(f"Delete {_quantity(len(cleanup_paths), 'source path')}?"):
+        console.print(f"Kept {_quantity(len(cleanup_paths), 'source path')}.", style="dim")
+        return result
+    result.merge(
+        _delete_sources(cleanup_paths, cfg, destinations=destinations, empty_dirs=empty_dirs)
+    )
+    return result
 
 
 # ── fetch (Libby / OverDrive) ───────────────────────────────────────────
@@ -653,7 +850,7 @@ def _offer_source_cleanup(
 @cli.command()
 @click.option("--setup", "setup_code", default=None, help="8-digit Libby setup code.")
 @click.option("--list", "list_only", is_flag=True, help="List current audiobook loans.")
-@click.option("--latest", type=int, default=None, help="Download latest N loans.")
+@click.option("--latest", type=click.IntRange(min=1), default=None, help="Download latest N loans.")
 @click.option("--select", "select_ids", multiple=True, help="Download specific loan(s) by ID.")
 @click.option("--all", "fetch_all", is_flag=True, help="Download all current loans.")
 @click.option(
@@ -696,10 +893,18 @@ def fetch(
     """
     cfg = _require_cfg(ctx)
 
+    if sum((bool(setup_code), list_only, latest is not None, bool(select_ids), fetch_all)) > 1:
+        raise click.UsageError(
+            "Select one fetch action: --setup, --list, --latest, --select, or --all."
+        )
+    if not any((setup_code, list_only, latest is not None, select_ids, fetch_all)):
+        click.echo(ctx.get_help())
+        return
+
     # Check odmpy is installed
     if not check_odmpy():
         console.print(
-            "[red]odmpy is not installed.[/red]\nInstall it with: [bold]uv pip install .[/bold]"
+            '[red]odmpy is not installed.[/red]\nInstall it with: [bold]uv pip install ".[libby]"[/bold]'
         )
         ctx.exit(1)
         return
@@ -730,7 +935,7 @@ def fetch(
     # ── List loans ──
     if list_only:
         with console.status("[bold green]Fetching loans…[/bold green]", spinner="dots"):
-            loans = list_loans(settings)
+            loans = _fetch_call(list_loans, settings)
 
         if not loans:
             console.print("[yellow]No downloadable audiobook loans found.[/yellow]")
@@ -743,7 +948,9 @@ def fetch(
         table.add_column("Title", style="bold")
 
         for loan in loans:
-            table.add_row(str(loan.index), loan.id, loan.author, loan.title)
+            table.add_row(
+                *(Text(value) for value in (str(loan.index), loan.id, loan.author, loan.title))
+            )
 
         console.print(table)
         console.print(
@@ -753,6 +960,10 @@ def fetch(
         return
 
     # ── Determine download target dir ──
+    if not download_dir and not cfg.source_dirs:
+        raise click.ClickException(
+            "No download directory is configured. Use --download-dir or set source_dirs."
+        )
     dl_dir = Path(download_dir) if download_dir else cfg.source_dirs[0]
     dl_dir = dl_dir.expanduser()
 
@@ -768,7 +979,8 @@ def fetch(
 
         console.print(f"[dim]Downloading latest {latest} loan(s) to {dl_dir}…[/dim]")
         with console.status("[bold green]Downloading…[/bold green]", spinner="dots"):
-            ok, output = download_latest(
+            ok, output = _fetch_call(
+                download_latest,
                 settings,
                 dl_dir,
                 count=latest,
@@ -788,13 +1000,15 @@ def fetch(
 
         if auto_organize:
             console.print()
-            ctx.invoke(org, extra_dirs=(), dest=None, dry_run=False, copy=False, yes=True)
+            ctx.invoke(
+                org, extra_dirs=(str(dl_dir),), dest=None, dry_run=False, copy=False, yes=True
+            )
         return
 
     # ── Download by ID(s) ──
     if select_ids or fetch_all:
         with console.status("[bold green]Fetching loans…[/bold green]", spinner="dots"):
-            loans = list_loans(settings)
+            loans = _fetch_call(list_loans, settings)
 
         if not loans:
             console.print("[yellow]No downloadable audiobook loans found.[/yellow]")
@@ -804,14 +1018,12 @@ def fetch(
             to_download = loans
         else:
             id_set = set(select_ids)
-            to_download = [ln for ln in loans if ln.id in id_set]
-            if not to_download:
-                console.print(f"[red]No loans matched IDs: {', '.join(select_ids)}[/red]")
-                console.print(
-                    "[dim]Use [bold]aborg fetch --list[/bold] to see available IDs.[/dim]"
+            missing_ids = id_set - {loan.id for loan in loans}
+            if missing_ids:
+                raise click.ClickException(
+                    f"No loans matched IDs: {', '.join(sorted(missing_ids))}"
                 )
-                ctx.exit(1)
-                return
+            to_download = [ln for ln in loans if ln.id in id_set]
 
         if dry_run:
             console.print(f"[dim]DRY RUN — would download {len(to_download)} loan(s):[/dim]")
@@ -827,7 +1039,8 @@ def fetch(
                 f"[bold green]Downloading:[/bold green] {loan.title}",
                 spinner="dots",
             ):
-                result = download_loan(
+                result = _fetch_call(
+                    download_loan,
                     settings,
                     dl_dir,
                     loan,
@@ -852,18 +1065,12 @@ def fetch(
 
         if auto_organize and ok_count:
             console.print()
-            ctx.invoke(org, extra_dirs=(), dest=None, dry_run=False, copy=False, yes=True)
+            ctx.invoke(
+                org, extra_dirs=(str(dl_dir),), dest=None, dry_run=False, copy=False, yes=True
+            )
+        if fail_count:
+            ctx.exit(1)
         return
-
-    # ── No action specified — show help ──
-    console.print(
-        "[yellow]No action specified.[/yellow] Use one of:\n"
-        "  [bold]aborg fetch --setup CODE[/bold]    Link your Libby account\n"
-        "  [bold]aborg fetch --list[/bold]           List current loans\n"
-        "  [bold]aborg fetch --latest N[/bold]       Download latest N loans\n"
-        "  [bold]aborg fetch --select ID[/bold]      Download specific loan by ID\n"
-        "  [bold]aborg fetch --all[/bold]            Download all loans"
-    )
 
 
 # ── analyze ──────────────────────────────────────────────────────────────
@@ -900,7 +1107,7 @@ def analyze(
     root = Path(path) if path else cfg.destination
 
     if not _require_dir(root, "Collection directory"):
-        return
+        ctx.exit(1)
 
     scan_cache = ScanCache() if cache else None
 
@@ -1024,6 +1231,11 @@ def analyze(
 
     console.print()
     console.print(summary)
+    if not dry_run and len(applied) != len(fixable):
+        console.print(
+            f"Failed {_quantity(len(fixable) - len(applied), 'correction')}.", style="red"
+        )
+        ctx.exit(1)
 
 
 # ── parse (utility) ─────────────────────────────────────────────────────
@@ -1141,9 +1353,16 @@ def parse(ctx: click.Context, filename: str) -> None:
 def undo(ctx: click.Context, dry_run: bool) -> None:
     """Undo the most recent organize operation."""
     cfg = _require_cfg(ctx)
-    actions = undo_last(cfg, dry_run=dry_run)
+    errors: list[str] = []
+    try:
+        actions = undo_last(cfg, dry_run=dry_run, on_error=errors.append)
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(f"Cannot process the undo log: {exc}") from exc
 
     if not actions:
+        if errors:
+            console.print(f"Failed to undo {_quantity(len(errors), 'operation')}.", style="red")
+            ctx.exit(1)
         console.print("[yellow]Nothing to undo.[/yellow]")
         return
 
@@ -1157,6 +1376,9 @@ def undo(ctx: click.Context, dry_run: bool) -> None:
         )
 
     console.print(f"\n[green]{verb} {len(actions)} item(s).[/green]")
+    if errors:
+        console.print(f"Failed to undo {_quantity(len(errors), 'operation')}.", style="red")
+        ctx.exit(1)
 
 
 # ── config ───────────────────────────────────────────────────────────────
@@ -1291,6 +1513,8 @@ def rename(ctx: click.Context, path: str | None, dry_run: bool, yes: bool, cache
     """Rename folders in an existing collection to match Audiobookshelf conventions."""
     cfg = _require_cfg(ctx)
     root = Path(path) if path else cfg.destination
+    if not _require_dir(root, "Collection directory"):
+        ctx.exit(1)
 
     scan_cache = ScanCache() if cache else None
 
@@ -1323,6 +1547,12 @@ def rename(ctx: click.Context, path: str | None, dry_run: bool, yes: bool, cache
             renames.append((item.path, new_path))
 
     if not renames:
+        if skipped:
+            console.print(
+                f"Skipped {_quantity(skipped, 'conflict')}. No folders were renamed.",
+                style="yellow",
+            )
+            ctx.exit(1)
         console.print("[green]All folders already match conventions.[/green]")
         return
 
@@ -1341,9 +1571,20 @@ def rename(ctx: click.Context, path: str | None, dry_run: bool, yes: bool, cache
         if not yes and not click.confirm(f"\nRename {len(renames)} folder(s)?"):
             console.print("[yellow]Aborted.[/yellow]")
             return
+        completed = 0
+        failed = skipped
         for old, new in renames:
-            old.rename(new)
-        console.print(f"\n[green]Renamed {len(renames)} folder(s).[/green]")
+            try:
+                if new.exists():
+                    raise FileExistsError(f"Target already exists: {new}")
+                old.rename(new)
+                completed += 1
+            except OSError as exc:
+                failed += 1
+                console.print(Text(f"Failed to rename {old}: {exc}", "red"))
+        console.print(f"Renamed {_quantity(completed, 'folder')}.", style="green")
+        if failed:
+            ctx.exit(1)
 
 
 # ── about ────────────────────────────────────────────────────────────────
@@ -1354,7 +1595,7 @@ def _get_git_commit() -> str | None:
     pkg_dir = Path(__file__).resolve().parent
     # Walk up to find the repo root (contains .git)
     for ancestor in pkg_dir.parents:
-        if (ancestor / ".git").is_dir():
+        if (ancestor / ".git").exists():
             try:
                 result = subprocess.run(
                     ["git", "-C", str(ancestor), "log", "-1", "--format=%h (%ci)"],
@@ -1371,26 +1612,28 @@ def _get_git_commit() -> str | None:
 
 
 @cli.command()
-def about() -> None:
-    """Show version, build, and project information."""
-    table = Table(title="aborg", show_header=False)
-    table.add_column("Key", style="bold")
-    table.add_column("Value")
-
-    table.add_row("Version", __version__)
-
+@click.option("-v", "--verbose", is_flag=True, help="Include Python build and executable details.")
+@click.pass_context
+def about(ctx: click.Context, verbose: bool) -> None:
+    """Show version, environment, and project information."""
+    console.print("aborg", style="bold")
+    rows = [("Version", __version__)]
     commit = _get_git_commit()
     if commit:
-        table.add_row("Last commit", commit)
-
-    table.add_row("Python", f"{sys.version} ({sys.executable})")
-    table.add_row("Install path", str(Path(__file__).resolve().parent))
-    table.add_row("Config path", str(DEFAULT_CONFIG_PATH))
-    table.add_row("Repository", "https://github.com/robert-bryson/aborg")
-    table.add_row("Website", "https://rsmb.tv")
-    table.add_row("License", "MIT")
-
-    console.print(table)
+        rows.append(("Last commit", commit))
+    rows.append(("Python", platform.python_version()))
+    if verbose:
+        rows.extend([("Python build", sys.version), ("Executable", sys.executable)])
+    rows.extend(
+        [
+            ("Install path", str(Path(__file__).resolve().parent)),
+            ("Config path", str(ctx.obj["cfg_path"])),
+            ("Repository", "https://github.com/robert-bryson/aborg"),
+            ("Website", "https://rsmb.tv"),
+            ("License", "MIT"),
+        ]
+    )
+    _print_fields(rows)
 
 
 # ── tldr ─────────────────────────────────────────────────────────────────

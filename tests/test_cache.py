@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from audiobook_organizer.cache import CACHE_VERSION, ScanCache, _fingerprint
 from audiobook_organizer.parser import AudiobookMeta
 from audiobook_organizer.scanner import ScanResult
@@ -338,3 +340,83 @@ class TestCacheEdgeCases:
         assert got is None
         # The corrupt entry should have been discarded
         assert cache.size == 0
+
+
+class TestCacheValidation:
+    @staticmethod
+    def _cache(tmp_path, mutate):
+        import json
+
+        audio = tmp_path / "audio.mp3"
+        audio.write_bytes(b"audio")
+        path = tmp_path / "cache.json"
+        cache = ScanCache(path)
+        cache.put(audio, _make_result(audio, kind="audio_file"))
+        cache.save()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        mutate(payload, str(audio))
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return ScanCache(path), audio
+
+    def test_entries_container_must_be_an_object(self, tmp_path):
+        cache, audio = self._cache(tmp_path, lambda data, _key: data.update(entries=[]))
+        assert cache.get(audio) is None
+
+    def test_entry_must_be_an_object(self, tmp_path):
+        cache, audio = self._cache(tmp_path, lambda data, key: data["entries"].update({key: 42}))
+        assert cache.get(audio) is None
+
+    def test_invalid_utf8_is_discarded(self, tmp_path):
+        path = tmp_path / "cache.json"
+        path.write_bytes(b"\xff")
+        assert ScanCache(path).size == 0
+
+    def test_cached_source_path_cannot_change(self, tmp_path):
+        def mutate(data, key):
+            data["entries"][key]["result"]["path"] = str(tmp_path / "unrelated.mp3")
+
+        cache, audio = self._cache(tmp_path, mutate)
+        assert cache.get(audio) is None
+        assert cache.size == 0
+
+    def test_grouped_source_cannot_escape_its_directory(self, tmp_path):
+        def mutate(data, key):
+            data["entries"][key]["result"]["source_files"] = [str(tmp_path / "unrelated.mp3")]
+
+        cache, audio = self._cache(tmp_path, mutate)
+        assert cache.get(audio) is None
+
+    def test_invalid_metadata_types_are_discarded(self, tmp_path):
+        def mutate(data, key):
+            data["entries"][key]["result"]["meta"]["author"] = ["Author"]
+
+        cache, audio = self._cache(tmp_path, mutate)
+        assert cache.get(audio) is None
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("size", "100"),
+        ("size", -1),
+        ("file_count", True),
+        ("kind", "unknown"),
+        ("has_cover", "false"),
+        ("source_files", "audio.mp3"),
+        ("meta", None),
+    ],
+)
+def test_invalid_cached_fields_are_discarded(tmp_path, field, value):
+    def mutate(data, key):
+        data["entries"][key]["result"][field] = value
+
+    cache, audio = TestCacheValidation._cache(tmp_path, mutate)
+    assert cache.get(audio) is None
+
+
+def test_empty_child_directory_changes_fingerprint(tmp_path):
+    directory = tmp_path / "book"
+    _make_audio_file(directory / "audio.mp3")
+    before = _fingerprint(directory)
+    (directory / "empty").mkdir()
+    assert _fingerprint(directory) != before

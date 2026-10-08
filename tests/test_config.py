@@ -80,11 +80,11 @@ class TestConfigLoad:
     def test_default_author_name_format_is_last_first(self):
         assert Config().author_name_format == "last_first"
 
-    def test_invalid_author_name_format_ignored(self, tmp_path):
+    def test_invalid_author_name_format_rejected(self, tmp_path):
         cfg_file = tmp_path / "config.yaml"
         cfg_file.write_text(yaml.dump({"author_name_format": "bogus"}))
-        cfg = Config.load(cfg_file)
-        assert cfg.author_name_format == "last_first"  # default preserved
+        with pytest.raises(ValueError, match="author_name_format"):
+            Config.load(cfg_file)
 
     def test_source_dirs_deduplicated_at_load(self, tmp_path):
         """Duplicate source_dirs should be removed when loading config."""
@@ -155,21 +155,19 @@ class TestConfigSave:
 
 
 class TestConfigLoadEdgeCases:
-    def test_invalid_min_file_size_string_uses_default(self, tmp_path):
-        """A non-integer min_file_size value should silently use the default."""
+    def test_invalid_min_file_size_string_rejected(self, tmp_path):
+        """Reject a size that is not an integer."""
         cfg_file = tmp_path / "config.yaml"
         cfg_file.write_text("min_file_size: '1 MB'\n")
-        default_min = Config.default().min_file_size
-        cfg = Config.load(cfg_file)
-        assert cfg.min_file_size == default_min
+        with pytest.raises(ValueError, match="min_file_size"):
+            Config.load(cfg_file)
 
-    def test_invalid_min_file_size_null_uses_default(self, tmp_path):
-        """A null min_file_size should silently use the default."""
+    def test_invalid_min_file_size_null_rejected(self, tmp_path):
+        """Reject a null size."""
         cfg_file = tmp_path / "config.yaml"
         cfg_file.write_text("min_file_size: null\n")
-        default_min = Config.default().min_file_size
-        cfg = Config.load(cfg_file)
-        assert cfg.min_file_size == default_min
+        with pytest.raises(ValueError, match="min_file_size"):
+            Config.load(cfg_file)
 
     def test_libby_settings_loaded(self, tmp_path):
         """Libby sub-section values should be loaded correctly."""
@@ -211,3 +209,44 @@ class TestConfigLoadEdgeCases:
         b = Config()
         a.source_dirs.append(Path("/some/path"))
         assert b.source_dirs == []
+
+
+@pytest.mark.parametrize(
+    "data, key",
+    [
+        ([], "config"),
+        (False, "config"),
+        ({"source_dirs": "/downloads"}, "source_dirs"),
+        ({"source_dirs": [None]}, "source_dirs"),
+        ({"destination": None}, "destination"),
+        ({"delete_after_extract": "false"}, "delete_after_extract"),
+        ({"auto_extract": 0}, "auto_extract"),
+        ({"min_file_size": -1}, "min_file_size"),
+        ({"min_file_size": True}, "min_file_size"),
+        ({"audio_extensions": ".mp3"}, "audio_extensions"),
+        ({"audio_extensions": ["mp3"]}, "audio_extensions"),
+        ({"filename_patterns": ["["]}, "filename_patterns"),
+        ({"known_authors": []}, "known_authors"),
+        ({"known_authors": {"Author": None}}, "known_authors"),
+        ({"libby": []}, "libby"),
+        ({"libby": {"merge": "false"}}, "libby.merge"),
+        ({"libby": {"merge_format": "wav"}}, "libby.merge_format"),
+        ({"libby": {"book_folder_format": None}}, "libby.book_folder_format"),
+    ],
+)
+def test_invalid_config_is_rejected_before_use(tmp_path, data, key):
+    config = tmp_path / "invalid.yaml"
+    config.write_text(yaml.safe_dump(data), encoding="utf-8")
+    with pytest.raises(ValueError, match=key):
+        Config.load(config)
+
+
+def test_unicode_configuration_round_trip(tmp_path):
+    cfg = Config.default()
+    cfg.source_dirs = [tmp_path / "日本語"]
+    cfg.known_authors = {"作者": "書籍の作者"}
+    path = tmp_path / "config.yaml"
+    cfg.save(path)
+    loaded = Config.load(path)
+    assert loaded.source_dirs == cfg.source_dirs
+    assert loaded.known_authors == cfg.known_authors

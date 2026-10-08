@@ -712,7 +712,9 @@ class TestApplyFixesDryRun:
         report = analyze_collection(tmp_path, cfg)
 
         called: list[tuple[str, bool]] = []
-        applied = apply_fixes(report, dry_run=True, on_fix=lambda a, ok, e: called.append((a.kind, ok)))
+        applied = apply_fixes(
+            report, dry_run=True, on_fix=lambda a, ok, e: called.append((a.kind, ok))
+        )
         assert len(applied) >= 1
         assert all(ok for _, ok in called)
         # The empty dir must still exist — dry run made no changes

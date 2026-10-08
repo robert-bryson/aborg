@@ -1,100 +1,73 @@
-# Directories to scan for new audiobook files
+# Source directories contain books to import.
 source_dirs:
-  - ~/Downloads
-  # - /path/to/other/dir
+- ~/Downloads
 
-# Root directory for the organized collection (Audiobookshelf-compatible)
-destination: "/mnt/audiobooks"
+# Set an existing destination directory for the collection.
+destination: /mnt/audiobooks
 
-# File extensions that the tool treats as archives
+# Use file extensions that start with a dot.
 archive_extensions:
-  - .zip
-  - .rar
-  - .7z
-
-# File extensions that the tool treats as audio
+- .7z
+- .rar
+- .zip
 audio_extensions:
-  - .m4b
-  - .mp3
-  - .m4a
-  - .ogg
-  - .opus
-  - .flac
-  - .wma
-  - .aac
-
-# File extensions that the tool moves with audio files as companion files
+- .aac
+- .flac
+- .m4a
+- .m4b
+- .mp3
+- .ogg
+- .opus
+- .wma
 companion_extensions:
-  - .jpg
-  - .jpeg
-  - .png
-  - .pdf
-  - .epub
-  - .nfo
-  - .cue
-  - .txt
-  - .opf
+- .cue
+- .epub
+- .jpeg
+- .jpg
+- .nfo
+- .opf
+- .pdf
+- .png
+- .txt
 
-# Set to true to extract zip archives at the destination.
-# The tool moves non-zip archives (.rar, .7z) without extraction.
+# Extract ZIP files. Copy or move other archives without extraction.
 auto_extract: true
 
-# Set to true to delete the archive after successful extraction.
+# Keep extracted source archives by default. The --copy option always keeps them.
 delete_after_extract: false
 
-# Regex patterns for parsing filenames. The tool tries patterns in order. The first match wins.
-# Supported capture groups: author, title, series, sequence, year, narrator
+# Use these regular expressions in order to read filename metadata.
 filename_patterns:
-  # N - Title - Author - Year  (e.g. "2 - Dune - Frank Herbert - 1965")
-  - '(?P<sequence>\d+)\s*-\s*(?P<title>.+)\s*-\s*(?P<author>[^\d]+?)\s*-\s*(?P<year>\d{4})\s*$'
-  # Author - Series Book N - Title (Year) [{Narrator}]  (float sequences like 0.2 supported)
-  - '(?P<author>.+?) - (?P<series>.+?)\s*(?:Book|Vol\.?|Volume)\s*(?P<sequence>\d+(?:\.\d+)?)\s*-\s*(?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*[\[{](?P<narrator>[^\]}]+)[\]}])?$'
-  # Author - Title - Series, Book N [{Narrator}]  (e.g. "Title - Teixcalaan Series, Book 2")
-  - '(?P<author>.+?) - (?P<title>.+?)\s+-\s+(?P<series>.+?),\s*(?:Book|Vol\.?|Volume)\s*(?P<sequence>\d+(?:\.\d+)?)(?:\s*[\[{](?P<narrator>[^\]}]+)[\]}])?$'
-  # Author - Title (Year) [{Narrator}]
-  - '(?P<author>.+?) - (?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*[\[{](?P<narrator>[^\]}]+)[\]}])?$'
-  # Title - Author (Year)
-  - '(?P<title>.+?) - (?P<author>.+?)(?:\s*\((?P<year>\d{4})\))?$'
-  # Series N Title  (e.g. "The Expanse 01 Leviathan Wakes", "The Expanse 02.5 Gods of Risk")
-  # The pattern requires 2 or more words for the series name to avoid false matches.
-  - '(?P<series>(?:[^\W\d_]+\s+){2,}?)(?P<sequence>\d+(?:\.\d+)?)\s+(?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*[\[{](?P<narrator>[^\]}]+)[\]}])?$'
-  # Author_Title
-  - '(?P<author>[^_]+)_(?P<title>.+)$'
+- (?P<sequence>\d+)\s*-\s*(?P<title>.+)\s*-\s*(?P<author>[^\d]+?)\s*-\s*(?P<year>\d{4})\s*$
+- (?P<author>.+?) - (?P<series>.+?)\s*(?:Book|Vol\.?|Volume)\s*(?P<sequence>\d+(?:\.\d+)?)\s*-\s*(?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*[\[{](?P<narrator>[^\]}]+)[\]}])?$
+- (?P<author>.+?) - (?P<title>.+?)\s+-\s+(?P<series>.+?),\s*(?:Book|Vol\.?|Volume)\s*(?P<sequence>\d+(?:\.\d+)?)(?:\s*[\[{](?P<narrator>[^\]}]+)[\]}])?$
+- (?P<author>.+?) - (?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*[\[{](?P<narrator>[^\]}]+)[\]}])?$
+- (?P<title>.+?) - (?P<author>.+?)(?:\s*\((?P<year>\d{4})\))?$
+- (?P<series>(?:[^\W\d_]+\s+){2,}?)(?P<sequence>\d+(?:\.\d+)?)\s+(?P<title>.+?)(?:\s*\((?P<year>\d{4})\))?(?:\s*[\[{](?P<narrator>[^\]}]+)[\]}])?$
+- (?P<author>[^_]+)_(?P<title>.+)$
 
-# Author name format for folder names:
-#   last_first  → "Austen, Jane"  (library convention, default)
-#   first_last  → "Jane Austen"   (natural reading order)
+# Use last_first or first_last for author directory names.
 author_name_format: last_first
 
-# Minimum file size in bytes. The tool skips files smaller than this value.
-min_file_size: 1048576  # 1 MB
+# Set the minimum file size in bytes. Archives also have a 50,000,000-byte minimum.
+min_file_size: 1048576
 
-# Move log file. The undo command reads this file.
-move_log: "~/.aborg/moves.log"
+# The undo command reads this log file.
+move_log: ~/.aborg/moves.log
 
-# Optional: Map single-word author names (case-insensitive) to their full names.
-# The tool supplements this table with a built-in list of classical and historical mononyms.
-# known_authors:
-#   "Proust": "Marcel Proust"
-#   "Borges": "Jorge Luis Borges"
+# Map single-name aliases to full author names. Keys ignore letter case.
+known_authors: {}
 
-# ── Libby/OverDrive integration (requires odmpy) ────────────────────────────────────
+# Libby tools require the optional libby package extra.
 libby:
-  # Directory for Libby authentication tokens
-  settings_folder: "~/.aborg/libby"
-
-  # Set to true to merge downloaded MP3 parts into one file
+  settings_folder: ~/.aborg/libby
   merge: false
-
-  # Merged file format. Use mp3 or m4b. The m4b format requires ffmpeg.
   merge_format: m4b
-
-  # Set to true to embed chapter markers in downloaded files
   chapters: true
-
-  # Set to true to download cover art (cover.jpg)
   keep_cover: true
+  book_folder_format: '%(Author)s - %(Title)s'
 
-  # Folder name format for downloaded books (odmpy format string)
-  # Available tokens: %(Title)s, %(Author)s, %(Series)s, %(ReadingOrder)s, %(Edition)s, %(ID)s
-  book_folder_format: "%(Author)s - %(Title)s"
+# Set booleans to true or false without quotation marks.
+# Use mp3 or m4b for merge_format. M4B needs ffmpeg.
+# Protect settings_folder; it contains account data.
+# Example alias: known_authors: {Proust: Marcel Proust}

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from audiobook_organizer.fetcher import (
     LibbyLoan,
     check_odmpy,
@@ -314,3 +316,156 @@ class TestListLoansEdgeCases:
         mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
         loans = list_loans(tmp_path)
         assert loans == []
+
+
+@pytest.fixture()
+def fetch_config(tmp_path):
+    from audiobook_organizer.config import Config
+
+    config = tmp_path / "config.yaml"
+    cfg = Config.default()
+    cfg.source_dirs = []
+    cfg.destination = tmp_path / "library"
+    cfg.destination.mkdir()
+    cfg.save(config)
+    return config
+
+
+class TestFetchFailures:
+    @pytest.mark.parametrize(
+        "flags",
+        [
+            ["--latest", "0"],
+            ["--latest", "-1"],
+            ["--all", "--latest", "1"],
+            ["--list", "--select", "1"],
+        ],
+    )
+    def test_invalid_fetch_actions_are_rejected(self, fetch_config, flags):
+        from click.testing import CliRunner
+
+        from audiobook_organizer.cli import cli
+
+        result = CliRunner().invoke(cli, ["-c", str(fetch_config), "fetch", *flags])
+        assert result.exit_code == 2
+
+    def test_no_action_shows_help_without_odmpy(self, fetch_config):
+        from click.testing import CliRunner
+
+        from audiobook_organizer.cli import cli
+
+        with patch("audiobook_organizer.cli.check_odmpy") as check:
+            result = CliRunner().invoke(cli, ["-c", str(fetch_config), "fetch"])
+        assert result.exit_code == 0
+        assert "--latest" in result.output
+        check.assert_not_called()
+
+    def test_download_requires_a_directory(self, fetch_config):
+        from click.testing import CliRunner
+
+        from audiobook_organizer.cli import cli
+
+        with (
+            patch("audiobook_organizer.cli.check_odmpy", return_value=True),
+            patch("audiobook_organizer.cli.is_authenticated", return_value=True),
+        ):
+            result = CliRunner().invoke(cli, ["-c", str(fetch_config), "fetch", "--latest", "1"])
+        assert result.exit_code == 1
+        assert "No download directory" in result.output
+
+    def test_subprocess_error_becomes_cli_error(self, fetch_config):
+        from click.testing import CliRunner
+
+        from audiobook_organizer.cli import cli
+
+        with (
+            patch("audiobook_organizer.cli.check_odmpy", return_value=True),
+            patch("audiobook_organizer.cli.is_authenticated", return_value=True),
+            patch(
+                "audiobook_organizer.cli.list_loans", side_effect=RuntimeError("connection failed")
+            ),
+        ):
+            result = CliRunner().invoke(cli, ["-c", str(fetch_config), "fetch", "--list"])
+        assert result.exit_code == 1
+        assert "Libby operation failed: connection failed" in result.output
+        assert "Traceback" not in result.output
+
+    def test_partly_invalid_id_selection_does_not_download_subset(self, fetch_config, tmp_path):
+        from click.testing import CliRunner
+
+        from audiobook_organizer.cli import cli
+
+        loans = [LibbyLoan("valid", "Book", "Author", 1)]
+        with (
+            patch("audiobook_organizer.cli.check_odmpy", return_value=True),
+            patch("audiobook_organizer.cli.is_authenticated", return_value=True),
+            patch("audiobook_organizer.cli.list_loans", return_value=loans),
+            patch("audiobook_organizer.cli.download_loan") as download,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "-c",
+                    str(fetch_config),
+                    "fetch",
+                    "--select",
+                    "valid",
+                    "--select",
+                    "invalid",
+                    "--download-dir",
+                    str(tmp_path),
+                ],
+            )
+        assert result.exit_code == 1
+        assert "invalid" in result.output
+        download.assert_not_called()
+
+    def test_failed_selected_download_returns_nonzero(self, fetch_config, tmp_path):
+        from click.testing import CliRunner
+
+        from audiobook_organizer.cli import cli
+        from audiobook_organizer.fetcher import FetchResult
+
+        loan = LibbyLoan("valid", "Book", "Author", 1)
+        with (
+            patch("audiobook_organizer.cli.check_odmpy", return_value=True),
+            patch("audiobook_organizer.cli.is_authenticated", return_value=True),
+            patch("audiobook_organizer.cli.list_loans", return_value=[loan]),
+            patch(
+                "audiobook_organizer.cli.download_loan",
+                return_value=FetchResult(loan, tmp_path, False, "failed"),
+            ),
+        ):
+            result = CliRunner().invoke(
+                cli, ["-c", str(fetch_config), "fetch", "--all", "--download-dir", str(tmp_path)]
+            )
+        assert result.exit_code == 1
+        assert "1 failed" in result.output
+
+    def test_auto_organize_includes_explicit_download_directory(self, fetch_config, tmp_path):
+        from click.testing import CliRunner
+
+        from audiobook_organizer.cli import cli
+
+        with (
+            patch("audiobook_organizer.cli.check_odmpy", return_value=True),
+            patch("audiobook_organizer.cli.is_authenticated", return_value=True),
+            patch("audiobook_organizer.cli.download_latest", return_value=(True, "done")),
+            patch("audiobook_organizer.cli._run_scan", return_value=None) as scan,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "-c",
+                    str(fetch_config),
+                    "fetch",
+                    "--latest",
+                    "1",
+                    "--organize",
+                    "--download-dir",
+                    str(tmp_path),
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        scan.assert_called_once()
+        assert tmp_path in scan.call_args.args[0].source_dirs
