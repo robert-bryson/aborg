@@ -1,6 +1,7 @@
 """Tests for audiobook_organizer.organizer — file moving/copying/extraction."""
 
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -318,6 +319,53 @@ class TestUndo:
         with zipfile.ZipFile(archive) as zf:
             assert zf.read("nested/audio.mp3") == b"audio"
 
+    def test_undo_extract_preserves_empty_directories(self, tmp_path):
+        source = tmp_path / "source.zip"
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr("audio.mp3", b"audio")
+            archive.writestr("extras/empty/", b"")
+        cfg = Config(
+            destination=tmp_path / "library",
+            move_log=tmp_path / "moves.log",
+            auto_extract=True,
+            delete_after_extract=True,
+        )
+        actions = organize([_scan_result(source, kind="archive")], cfg)
+
+        assert undo_last(cfg) == [(actions[0][1], source)]
+
+        with zipfile.ZipFile(source) as archive:
+            assert archive.getinfo("extras/empty/").is_dir()
+            assert archive.read("audio.mp3") == b"audio"
+
+    @pytest.mark.parametrize("linked_path", ["root", "child"])
+    def test_undo_rebuild_rejects_links_and_keeps_recovery_data(
+        self, tmp_path, monkeypatch, linked_path
+    ):
+        source = tmp_path / "source.zip"
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr("audio.mp3", b"audio")
+        cfg = Config(
+            destination=tmp_path / "library",
+            move_log=tmp_path / "moves.log",
+            auto_extract=True,
+            delete_after_extract=True,
+        )
+        actions = organize([_scan_result(source, kind="archive")], cfg)
+        destination = actions[0][1]
+        linked = destination if linked_path == "root" else destination / "audio.mp3"
+        monkeypatch.setattr("audiobook_organizer.organizer.is_link", lambda path: path == linked)
+        log_before = cfg.move_log.read_bytes()
+        errors = []
+
+        assert undo_last(cfg, on_error=errors.append) == []
+
+        assert len(errors) == 1
+        assert not source.exists()
+        assert (destination / "audio.mp3").read_bytes() == b"audio"
+        assert cfg.move_log.read_bytes() == log_before
+        assert not list(tmp_path.glob(".source.zip.*.tmp"))
+
 
 class TestCollisionHandling:
     def test_collision_adds_unique_suffix(self, tmp_path):
@@ -346,6 +394,55 @@ class TestCollisionHandling:
         # Suffix should contain microseconds (20 chars: YYYYMMDDHHMMSS + 6 digits)
         suffix_part = second_dest.stem.split("_")[-1]
         assert len(suffix_part) == 20
+
+    @pytest.mark.parametrize("copy", [False, True])
+    def test_repeated_timestamp_does_not_overwrite_existing_file(self, tmp_path, copy):
+        source = _write(tmp_path / "source" / "book.mp3", b"new audio")
+        cfg = Config(destination=tmp_path / "dest", move_log=tmp_path / "moves.log")
+        item = _scan_result(source)
+        target_dir = cfg.destination / item.meta.dest_relative(author_format=cfg.author_name_format)
+        original = _write(target_dir / source.name, b"original audio")
+        timestamp = datetime(2026, 10, 12, tzinfo=timezone.utc)
+        occupied = _write(target_dir / "book_20261012000000000000.mp3", b"other audio")
+
+        with patch("audiobook_organizer.organizer.datetime") as clock:
+            clock.now.return_value = timestamp
+            actions = organize([item], cfg, copy=copy)
+
+        assert len(actions) == 1
+        assert actions[0][1] not in {original, occupied}
+        assert actions[0][1].read_bytes() == b"new audio"
+        assert original.read_bytes() == b"original audio"
+        assert occupied.read_bytes() == b"other audio"
+        assert source.exists() is copy
+
+    @pytest.mark.parametrize("copy", [False, True])
+    def test_destination_appearing_during_reservation_is_not_overwritten(self, tmp_path, copy):
+        source = _write(tmp_path / "source" / "book.mp3", b"new audio")
+        cfg = Config(destination=tmp_path / "dest", move_log=tmp_path / "moves.log")
+        item = _scan_result(source)
+        target = (
+            cfg.destination
+            / item.meta.dest_relative(author_format=cfg.author_name_format)
+            / source.name
+        )
+        real_touch = Path.touch
+        raced = False
+
+        def touch_with_race(path, *args, **kwargs):
+            nonlocal raced
+            if path == target and not raced:
+                raced = True
+                path.write_bytes(b"other writer")
+            return real_touch(path, *args, **kwargs)
+
+        with patch.object(Path, "touch", new=touch_with_race):
+            actions = organize([item], cfg, copy=copy)
+
+        assert len(actions) == 1
+        assert actions[0][1] != target
+        assert actions[0][1].read_bytes() == b"new audio"
+        assert target.read_bytes() == b"other writer"
 
 
 class TestUndoMalformedLog:
@@ -905,6 +1002,19 @@ class TestUndoReportsOnlySuccessful:
 
 
 class TestOrganizerFailureBoundaries:
+    @pytest.mark.parametrize("copy", [False, True])
+    def test_failed_transfer_removes_only_reserved_file(self, tmp_path, copy):
+        source = _write(tmp_path / "source.mp3", b"original audio")
+        cfg = Config(destination=tmp_path / "library", move_log=tmp_path / "moves.log")
+        operation = "copy2" if copy else "move"
+        with patch(
+            f"audiobook_organizer.organizer.shutil.{operation}", side_effect=OSError("locked")
+        ):
+            assert organize([_scan_result(source)], cfg, copy=copy) == []
+        assert source.read_bytes() == b"original audio"
+        assert not list(cfg.destination.rglob("*.mp3"))
+        assert cfg.move_log.read_bytes() == b""
+
     def test_unwritable_log_stops_before_source_changes(self, tmp_path):
         source = _write(tmp_path / "source.mp3")
         log = tmp_path / "log-as-directory"

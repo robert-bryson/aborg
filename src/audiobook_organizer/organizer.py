@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .cleanup import is_link
 from .config import Config
 from .persistence import atomic_write_text
 from .scanner import ScanResult
@@ -255,19 +256,27 @@ def _move_or_copy(src: Path, dest: Path, *, copy: bool, dry_run: bool) -> Path |
     if dry_run:
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
-        # Avoid clobbering — add a timestamp suffix (with microseconds to prevent collisions)
-        stem = dest.stem
-        suffix = dest.suffix
-        dest = dest.with_name(f"{stem}_{datetime.now(timezone.utc):%Y%m%d%H%M%S%f}{suffix}")
-    if copy:
+    requested = dest
+    timestamp: str | None = None
+    collision = 0
+    while True:
         try:
+            dest.touch(exist_ok=False)
+            break
+        except FileExistsError:
+            if timestamp is None:
+                timestamp = f"{datetime.now(timezone.utc):%Y%m%d%H%M%S%f}"
+            counter = f"_{collision}" if collision else ""
+            dest = requested.with_name(f"{requested.stem}_{timestamp}{counter}{requested.suffix}")
+            collision += 1
+    try:
+        if copy:
             shutil.copy2(src, dest)
-        except OSError:
-            dest.unlink(missing_ok=True)
-            raise
-    else:
-        shutil.move(src, dest)
+        else:
+            shutil.move(src, dest)
+    except OSError:
+        dest.unlink(missing_ok=True)
+        raise
     return dest
 
 
@@ -432,6 +441,8 @@ def _remove_path(path: Path) -> None:
 
 def _rebuild_zip(extracted_dir: Path, archive_path: Path) -> None:
     """Recreate a deleted source zip before removing its extracted destination."""
+    if is_link(extracted_dir):
+        raise ValueError("Cannot rebuild an archive from a link or reparse point")
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
@@ -444,8 +455,11 @@ def _rebuild_zip(extracted_dir: Path, archive_path: Path) -> None:
             temporary = Path(stream.name)
             with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 for child in sorted(extracted_dir.rglob("*")):
-                    if child.is_file():
-                        archive.write(child, child.relative_to(extracted_dir))
+                    if is_link(child) or not (child.is_file() or child.is_dir()):
+                        raise ValueError(
+                            f"Cannot store a link or special file in an archive: {child}"
+                        )
+                    archive.write(child, child.relative_to(extracted_dir))
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(archive_path)

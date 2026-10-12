@@ -301,19 +301,50 @@ class TestScanCollection:
         assert "Author A" in authors
         assert "Author B" in authors
 
-    def test_scans_series_structure(self, tmp_path):
-        # Audio in subdirs of a series dir → _collect_dir_info walks
-        # recursively, so the series dir itself reports audio_count > 0
-        # and is treated as a single title dir.
+    @pytest.mark.parametrize("use_cache", [False, True])
+    def test_scans_series_structure(self, tmp_path, use_cache):
+        from audiobook_organizer.cache import ScanCache
+
         title1 = tmp_path / "Author" / "Series" / "Book 1"
         title2 = tmp_path / "Author" / "Series" / "Book 2"
         _make_audio_file(title1 / "audio.mp3")
         _make_audio_file(title2 / "audio.mp3")
 
         cfg = make_cfg()
-        collection = scan_collection(tmp_path, cfg)
+        cache = ScanCache(tmp_path / "cache.json") if use_cache else None
+        for _scan in range(2):
+            collection = scan_collection(tmp_path, cfg, read_tags=False, cache=cache)
+            assert {item.path for item in collection.items} == {title1, title2}
+            assert {item.meta.title for item in collection.items} == {"Book 1", "Book 2"}
+            assert all(item.meta.author == "Author" for item in collection.items)
+            assert all(item.meta.series == "Series" for item in collection.items)
+            assert all(item.file_count == 1 for item in collection.items)
+
+    @pytest.mark.parametrize("in_series", [False, True])
+    def test_multidisc_book_is_one_item(self, tmp_path, in_series):
+        parent = tmp_path / "Author"
+        if in_series:
+            parent /= "Series"
+        book = parent / "Book"
+        _make_audio_file(book / "Disc 1" / "track.mp3")
+        _make_audio_file(book / "Disc 2" / "track.mp3")
+
+        collection = scan_collection(tmp_path, make_cfg(), read_tags=False)
+
         assert len(collection.items) == 1
-        assert collection.items[0].meta.author == "Author"
+        assert collection.items[0].path == book
+        assert collection.items[0].file_count == 2
+        assert collection.items[0].meta.series == ("Series" if in_series else None)
+
+    def test_empty_book_in_nonempty_series_is_reported(self, tmp_path):
+        series = tmp_path / "Author" / "Series"
+        _make_audio_file(series / "Book" / "audio.mp3")
+        empty = series / "Empty Book"
+        empty.mkdir()
+
+        collection = scan_collection(tmp_path, make_cfg(), read_tags=False)
+
+        assert empty in collection.empty_dirs
 
     def test_empty_collection(self, tmp_path):
         cfg = Config()
@@ -583,6 +614,20 @@ class TestNormalizeDedup:
     def test_preserves_distinctness(self):
         assert _normalize_dedup("Author A") != _normalize_dedup("Author B")
 
+    def test_non_latin_names_remain_distinct(self):
+        assert _normalize_dedup("作者甲::第一部") != _normalize_dedup("作者乙::第二部")
+
+    def test_source_scan_keeps_distinct_non_latin_books(self, tmp_path):
+        source = tmp_path / "downloads"
+        _make_audio_file(source / "作者甲 - 第一部.mp3")
+        _make_audio_file(source / "作者乙 - 第二部.mp3")
+
+        results, missing = scan_sources(make_cfg(source_dirs=[source]))
+
+        assert missing == []
+        assert {item.meta.author for item in results} == {"作者甲", "作者乙"}
+        assert {item.meta.title for item in results} == {"第一部", "第二部"}
+
 
 class TestFoldAccents:
     """Tests for the shared fold_accents utility."""
@@ -599,6 +644,10 @@ class TestFoldAccents:
 
     def test_handles_empty_string(self):
         assert fold_accents("") == ""
+
+    @pytest.mark.parametrize("name", ["中文", "日本語", "Русский", "한글"])
+    def test_preserves_non_latin_scripts(self, name):
+        assert fold_accents(name) == name
 
 
 class TestCheckDir:

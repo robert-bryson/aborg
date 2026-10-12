@@ -16,6 +16,7 @@ from typing import TypeVar
 import click
 import yaml
 from rich.console import Console
+from rich.markup import escape
 from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
@@ -254,10 +255,10 @@ def _print_books_table(report: AnalysisReport) -> None:
     for i, item in enumerate(sorted_items, 1):
         tbl.add_row(
             str(i),
-            item.meta.author,
-            item.meta.title,
-            f"{item.meta.series} #{item.meta.sequence}" if item.meta.series else "",
-            item.meta.year or "",
+            Text(item.meta.author),
+            Text(item.meta.title),
+            Text(f"{item.meta.series} #{item.meta.sequence}" if item.meta.series else ""),
+            Text(item.meta.year or ""),
             _human_size(item.size),
             str(item.file_count) if item.file_count else "",
         )
@@ -333,10 +334,10 @@ def _require_dir(path: Path, label: str = "Directory") -> bool:
         return True
     hint = _check_wsl_mount(path)
     if hint:
-        console.print(f"[red]{label} not found: {path}[/red]")
+        console.print(Text(f"{label} not found: {path}", "red"))
         console.print(f"[yellow]{hint}[/yellow]")
     else:
-        console.print(f"[red]{label} not found: {path}[/red]")
+        console.print(Text(f"{label} not found: {path}", "red"))
     return False
 
 
@@ -369,7 +370,7 @@ def _require_cfg(ctx: click.Context) -> Config:
     if cfg is not None:
         return cfg
     cfg_path = ctx.obj["cfg_path"]
-    console.print(f"[red]Config file not found:[/red] {cfg_path}")
+    console.print(Text.assemble(("Config file not found: ", "red"), str(cfg_path)))
     console.print("[yellow]Run [bold]aborg config[/bold] to create one.[/yellow]")
     raise SystemExit(1)
 
@@ -916,9 +917,9 @@ def fetch(
         console.print("[dim]Linking Libby account…[/dim]")
         ok, msg = libby_setup(settings, setup_code)
         if ok:
-            console.print(f"[green]{msg}[/green]")
+            console.print(Text(msg, "green"))
         else:
-            console.print(f"[red]{msg}[/red]")
+            console.print(Text(msg, "red"))
             ctx.exit(1)
         return
 
@@ -973,11 +974,11 @@ def fetch(
     if latest is not None:
         if dry_run:
             console.print(
-                f"[dim]DRY RUN — would download latest {latest} loan(s) to {dl_dir}[/dim]"
+                Text(f"DRY RUN — would download latest {latest} loan(s) to {dl_dir}", "dim")
             )
             return
 
-        console.print(f"[dim]Downloading latest {latest} loan(s) to {dl_dir}…[/dim]")
+        console.print(Text(f"Downloading latest {latest} loan(s) to {dl_dir}…", "dim"))
         with console.status("[bold green]Downloading…[/bold green]", spinner="dots"):
             ok, output = _fetch_call(
                 download_latest,
@@ -994,7 +995,7 @@ def fetch(
         if ok:
             console.print("[green]Download complete.[/green]")
         else:
-            console.print(f"[red]Download failed:[/red] {output}")
+            console.print(Text.assemble(("Download failed: ", "red"), output))
             ctx.exit(1)
             return
 
@@ -1028,15 +1029,19 @@ def fetch(
         if dry_run:
             console.print(f"[dim]DRY RUN — would download {len(to_download)} loan(s):[/dim]")
             for loan in to_download:
-                console.print(f"  [dim]{loan.index}.[/dim] {loan.author} — {loan.title}")
+                console.print(Text(f"  {loan.index}. {loan.author} — {loan.title}"))
             return
 
-        console.print(f"Downloading [bold]{len(to_download)}[/bold] loan(s) to {dl_dir}…\n")
+        console.print(
+            Text.assemble(
+                "Downloading ", (str(len(to_download)), "bold"), f" loan(s) to {dl_dir}…\n"
+            )
+        )
         results: list[FetchResult] = []
         for loan in to_download:
-            console.print(f"  [dim]↓[/dim] {loan.author} — [bold]{loan.title}[/bold]")
+            console.print(Text.assemble(("  ↓ ", "dim"), f"{loan.author} — ", (loan.title, "bold")))
             with console.status(
-                f"[bold green]Downloading:[/bold green] {loan.title}",
+                Text.assemble(("Downloading: ", "bold green"), loan.title),
                 spinner="dots",
             ):
                 result = _fetch_call(
@@ -1052,9 +1057,9 @@ def fetch(
                 )
             results.append(result)
             if result.success:
-                console.print(f"  [green]✓[/green] {loan.title}")
+                console.print(Text.assemble(("  ✓ ", "green"), loan.title))
             else:
-                console.print(f"  [red]✗[/red] {loan.title}: {result.message}")
+                console.print(Text.assemble(("  ✗ ", "red"), f"{loan.title}: {result.message}"))
 
         ok_count = sum(1 for r in results if r.success)
         fail_count = len(results) - ok_count
@@ -1112,12 +1117,12 @@ def analyze(
     scan_cache = ScanCache() if cache else None
 
     with console.status(
-        f"[bold green]Analyzing {root} …[/bold green]",
+        Text(f"Analyzing {root} …", "bold green"),
         spinner="dots",
     ) as status:
 
         def _on_progress(msg: str) -> None:
-            status.update(f"[bold green]Analyzing:[/bold green] {msg}")
+            status.update(Text.assemble(("Analyzing: ", "bold green"), msg))
 
         report = analyze_collection(
             root,
@@ -1161,10 +1166,10 @@ def analyze(
     for issue in report.issues:
         auto_fix = "[green]✓[/green]" if issue.fix else "[dim]—[/dim]"
         issues_table.add_row(
-            f"[{severity_style.get(issue.severity, '')}]{issue.severity}[/]",
-            issue.category,
-            issue.message,
-            issue.suggestion or "",
+            Text(issue.severity, severity_style.get(issue.severity, "")),
+            Text(issue.category),
+            Text(issue.message),
+            Text(issue.suggestion or ""),
             auto_fix,
         )
 
@@ -1212,14 +1217,16 @@ def analyze(
         icon = "[green]\u2713[/green]" if ok else "[red]\u2717[/red]"
         if dry_run:
             icon = "[dim]\u2022[/dim]"
-        reason = f" [red dim]({err})[/red dim]" if err and not ok else ""
+        reason = f" [red dim]({escape(err)})[/red dim]" if err and not ok else ""
         if action.kind == "remove_dir":
-            console.print(f"  {icon} Remove empty directory: [dim]{action.source}[/dim]{reason}")
+            console.print(
+                f"  {icon} Remove empty directory: [dim]{escape(str(action.source))}[/dim]{reason}"
+            )
         elif action.kind == "rename":
             target_label = action.target.name if action.target else "?"
             console.print(
-                f"  {icon} Rename: [dim]{action.source.name}[/dim]"
-                f" [blue]\u2192[/blue] [green]{target_label}[/green]{reason}"
+                f"  {icon} Rename: [dim]{escape(action.source.name)}[/dim]"
+                f" [blue]\u2192[/blue] [green]{escape(target_label)}[/green]{reason}"
             )
 
     applied = apply_fixes(report, dry_run=dry_run, on_fix=_on_fix)
@@ -1255,7 +1262,7 @@ def parse(ctx: click.Context, filename: str) -> None:
 
     # ── Normalise the input ──────────────────────────────────────────
     name = normalize_path_name(filename)
-    console.print(f"[dim]Parsed name:[/dim]  {name}")
+    console.print(Text.assemble(("Parsed name: ", "dim"), f" {name}"))
 
     # ── Identify the parent folder (potential author) ────────────────
     parent = path_parent_name(filename)
@@ -1308,17 +1315,17 @@ def parse(ctx: click.Context, filename: str) -> None:
     def _meta_row(label: str, m: AudiobookMeta) -> None:
         parts = []
         if m.author != "Unknown Author":
-            parts.append(f"author=[bold]{m.author}[/bold]")
+            parts.append(f"author=[bold]{escape(m.author)}[/bold]")
         if m.title != "Unknown Title":
-            parts.append(f"title={m.title}")
+            parts.append(f"title={escape(m.title)}")
         if m.series:
-            parts.append(f"series={m.series}")
+            parts.append(f"series={escape(m.series)}")
         if m.sequence:
-            parts.append(f"seq={m.sequence}")
+            parts.append(f"seq={escape(m.sequence)}")
         if m.year:
-            parts.append(f"year={m.year}")
+            parts.append(f"year={escape(m.year)}")
         if m.narrator:
-            parts.append(f"narrator={m.narrator}")
+            parts.append(f"narrator={escape(m.narrator)}")
         console.print(f"  [dim]{label}:[/dim] {', '.join(parts) if parts else '[dim]—[/dim]'}")
 
     console.print()
@@ -1333,14 +1340,17 @@ def parse(ctx: click.Context, filename: str) -> None:
     table = Table(title="Merged result", show_header=False)
     table.add_column("Field", style="bold")
     table.add_column("Value")
-    table.add_row("Author", merged.author)
-    table.add_row("Title", merged.title)
-    table.add_row("Series", merged.series or "—")
-    table.add_row("Sequence", merged.sequence or "—")
-    table.add_row("Year", merged.year or "—")
-    table.add_row("Narrator", merged.narrator or "—")
-    table.add_row("Dest folder", merged.dest_folder_name())
-    table.add_row("Dest path", str(merged.dest_relative(author_format=cfg.author_name_format)))
+    for label, value in (
+        ("Author", merged.author),
+        ("Title", merged.title),
+        ("Series", merged.series or "—"),
+        ("Sequence", merged.sequence or "—"),
+        ("Year", merged.year or "—"),
+        ("Narrator", merged.narrator or "—"),
+        ("Dest folder", merged.dest_folder_name()),
+        ("Dest path", str(merged.dest_relative(author_format=cfg.author_name_format))),
+    ):
+        table.add_row(label, Text(value))
     console.print(table)
 
 
@@ -1371,8 +1381,8 @@ def undo(ctx: click.Context, dry_run: bool) -> None:
     for i, (affected, original) in enumerate(actions, 1):
         console.print(
             f"  [green]↩[/green] [dim]{i:>3}.[/dim]"
-            f" [dim]{affected.name}[/dim]"
-            f"  [blue](original source: {original})[/blue]"
+            f" [dim]{escape(affected.name)}[/dim]"
+            f"  [blue](original source: {escape(str(original))})[/blue]"
         )
 
     console.print(f"\n[green]{verb} {len(actions)} item(s).[/green]")
@@ -1389,14 +1399,14 @@ def _show_config(cfg: Config) -> None:
     table = Table(title="Current Configuration", show_header=False)
     table.add_column("Key", style="bold")
     table.add_column("Value")
-    table.add_row("Source dirs", ", ".join(str(d) for d in cfg.source_dirs) or "(none)")
-    table.add_row("Destination", str(cfg.destination) or "(none)")
+    table.add_row("Source dirs", Text(", ".join(str(d) for d in cfg.source_dirs) or "(none)"))
+    table.add_row("Destination", Text(str(cfg.destination) or "(none)"))
     table.add_row("Auto extract", str(cfg.auto_extract))
     table.add_row("Delete after extract", str(cfg.delete_after_extract))
     table.add_row("Min file size", _human_size(cfg.min_file_size))
-    table.add_row("Move log", str(cfg.move_log))
-    table.add_row("Archive exts", ", ".join(sorted(cfg.archive_extensions)))
-    table.add_row("Audio exts", ", ".join(sorted(cfg.audio_extensions)))
+    table.add_row("Move log", Text(str(cfg.move_log)))
+    table.add_row("Archive exts", Text(", ".join(sorted(cfg.archive_extensions))))
+    table.add_row("Audio exts", Text(", ".join(sorted(cfg.audio_extensions))))
     table.add_row("Patterns", f"{len(cfg.filename_patterns)} pattern(s)")
     console.print(table)
 
@@ -1424,7 +1434,7 @@ def _config_wizard(cfg_path: Path) -> None:
             break
         p = Path(raw).expanduser()
         if not p.is_absolute():
-            console.print(f"  [yellow]Please enter an absolute path (got: {raw})[/yellow]")
+            console.print(Text(f"  Please enter an absolute path (got: {raw})", "yellow"))
             continue
         dirs.append(p)
     cfg.source_dirs = dirs
@@ -1438,14 +1448,14 @@ def _config_wizard(cfg_path: Path) -> None:
         raw = click.prompt("  Destination", type=str).strip()
         p = Path(raw).expanduser()
         if not p.is_absolute():
-            console.print(f"  [yellow]Please enter an absolute path (got: {raw})[/yellow]")
+            console.print(Text(f"  Please enter an absolute path (got: {raw})", "yellow"))
             continue
         cfg.destination = p
         break
 
     # ── Auto-extract archives ─────────────────────────────────────────
     cfg.auto_extract = click.confirm(
-        "\n  Auto-extract zip/rar/7z archives at destination?",
+        "\n  Extract ZIP archives at destination?",
         default=cfg.auto_extract,
     )
 
@@ -1459,14 +1469,14 @@ def _config_wizard(cfg_path: Path) -> None:
     # ── Review & confirm ──────────────────────────────────────────────
     console.print()
     _show_config(cfg)
-    console.print(f"\n  [dim]Config will be saved to: {cfg_path}[/dim]")
+    console.print(Text(f"\n  Config will be saved to: {cfg_path}", "dim"))
 
     if not click.confirm("\n  Save this configuration?", default=True):
         console.print("[yellow]Aborted — nothing was written.[/yellow]")
         return
 
     cfg.save(cfg_path)
-    console.print(f"\n[green]Config saved to {cfg_path}[/green]")
+    console.print(Text(f"\nConfig saved to {cfg_path}", "green"))
     console.print("You can edit it later or re-run [bold]aborg config[/bold] at any time.")
 
 
@@ -1484,11 +1494,11 @@ def config_cmd(ctx: click.Context, show: bool) -> None:
 
     if cfg is not None and not show:
         _show_config(cfg)
-        console.print(f"\n  [dim]Loaded from: {cfg_path}[/dim]")
+        console.print(Text(f"\n  Loaded from: {cfg_path}", "dim"))
         return
 
     # No config exists — offer to create one
-    console.print(f"[yellow]No config file found at {cfg_path}[/yellow]")
+    console.print(Text(f"No config file found at {cfg_path}", "yellow"))
     if not click.confirm("Would you like to create one now?", default=True):
         return
 
@@ -1519,7 +1529,7 @@ def rename(ctx: click.Context, path: str | None, dry_run: bool, yes: bool, cache
     scan_cache = ScanCache() if cache else None
 
     with console.status(
-        f"[bold green]Scanning collection at {root} …[/bold green]",
+        Text(f"Scanning collection at {root} …", "bold green"),
         spinner="dots",
     ):
         collection = scan_collection(root, cfg, read_tags=False, cache=scan_cache)
@@ -1539,8 +1549,8 @@ def rename(ctx: click.Context, path: str | None, dry_run: bool, yes: bool, cache
             new_path = item.path.parent / expected_name
             if new_path.exists():
                 console.print(
-                    f"  [yellow]⚠ skip conflict:[/yellow] [dim]{item.path.name}[/dim]"
-                    f"  [blue]→[/blue] [dim]{new_path.name}[/dim] (target exists)"
+                    f"  [yellow]⚠ skip conflict:[/yellow] [dim]{escape(item.path.name)}[/dim]"
+                    f"  [blue]→[/blue] [dim]{escape(new_path.name)}[/dim] (target exists)"
                 )
                 skipped += 1
                 continue
@@ -1561,7 +1571,8 @@ def rename(ctx: click.Context, path: str | None, dry_run: bool, yes: bool, cache
     )
     for i, (old, new) in enumerate(renames, 1):
         console.print(
-            f"  [dim]{i:>3}.[/dim] [dim]{old.name}[/dim]  [blue]→[/blue] [green]{new.name}[/green]"
+            f"  [dim]{i:>3}.[/dim] [dim]{escape(old.name)}[/dim]"
+            f"  [blue]→[/blue] [green]{escape(new.name)}[/green]"
         )
 
     if skipped:
@@ -1593,21 +1604,20 @@ def rename(ctx: click.Context, path: str | None, dry_run: bool, yes: bool, cache
 def _get_git_commit() -> str | None:
     """Return the short commit hash of the installed package, or *None*."""
     pkg_dir = Path(__file__).resolve().parent
-    # Walk up to find the repo root (contains .git)
-    for ancestor in pkg_dir.parents:
-        if (ancestor / ".git").exists():
-            try:
-                result = subprocess.run(
-                    ["git", "-C", str(ancestor), "log", "-1", "--format=%h (%ci)"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if result.returncode == 0:
-                    return result.stdout.strip()
-            except (OSError, subprocess.SubprocessError):  # git not found / failed
-                pass
-            break
+    project_dir = pkg_dir.parent.parent
+    if pkg_dir.parent.name != "src" or not (project_dir / ".git").exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project_dir), "log", "-1", "--format=%h (%ci)"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        pass
     return None
 
 

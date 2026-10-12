@@ -7,7 +7,6 @@ import io
 import json
 import os
 import re
-import unicodedata
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +27,7 @@ from .config import Config
 from .parser import (
     AudiobookMeta,
     _clean_tag_value,
+    _fold_accents,
     extract_series_from_title,
     looks_like_author,
     merge_meta,
@@ -70,8 +70,8 @@ _TRACK_PART_SUFFIX_RE = re.compile(
 
 
 def fold_accents(s: str) -> str:
-    """Fold accented characters to their ASCII equivalents."""
-    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+    """Remove Latin accent marks without deleting letters from other scripts."""
+    return _fold_accents(s)
 
 
 def _normalize_dedup(s: str) -> str:
@@ -103,7 +103,7 @@ class ScanResult:
 
 @dataclass
 class CollectionScan:
-    """Result of a single-pass collection scan, including filesystem metadata."""
+    """Collection scan results and filesystem metadata."""
 
     items: list[ScanResult] = field(default_factory=list)
     empty_dirs: list[Path] = field(default_factory=list)
@@ -401,6 +401,14 @@ def _check_file(path: Path, cfg: Config) -> ScanResult | None:
     return None
 
 
+def _is_book_directory(path: Path, audio_files: list[Path]) -> bool:
+    if not audio_files:
+        return False
+    if any(source.parent == path for source in audio_files):
+        return True
+    return all(_DISC_DIR_RE.fullmatch(source.relative_to(path).parts[0]) for source in audio_files)
+
+
 def _check_dir(path: Path, cfg: Config) -> ScanResult | None:
     """Check if a directory contains audiobook audio files."""
     all_exts = cfg.audio_extensions | cfg.companion_extensions
@@ -423,34 +431,17 @@ def _check_dir(path: Path, cfg: Config) -> ScanResult | None:
     if not audio_files:
         return None
 
-    # Detect container directories: no audio files directly in this dir, but
-    # one or more immediate subdirectories contain audio. Only keep the parent
-    # as one book when every audio subdir is a disc split ("Disc 1", "CD 2").
-    has_direct_audio = any(f.parent == path for f in audio_files)
-    if not has_direct_audio:
-        audio_subdirs: set[Path] = set()
-        for f in audio_files:
-            try:
-                direct_child = path / f.relative_to(path).parts[0]
-                if direct_child.is_dir():
-                    audio_subdirs.add(direct_child)
-            except (ValueError, IndexError):
-                pass
-        if audio_subdirs and not all(_DISC_DIR_RE.match(d.name) for d in audio_subdirs):
-            return None  # Container dir — scan_sources will recurse into subdirs
-    else:
-        # Flat dir with direct audio — check whether audio files span multiple albums
-        # (e.g. "The Dark Tower All 7 Books" dump or "01 - Dune Saga" with 8 m4b files).
-        # Sample up to 30 direct audio files to detect distinct album tags.
-        direct_audio = [f for f in audio_files if f.parent == path]
-        if len(direct_audio) > 1:
-            album_set: set[str] = set()
-            for f in sorted(direct_audio)[:30]:
-                album = _read_album_name(f)
-                if album:
-                    album_set.add(album.casefold())
-            if len(album_set) >= 2:
-                return None  # Multi-album flat dump — caller uses _split_flat_album_dir
+    if not _is_book_directory(path, audio_files):
+        return None
+    direct_audio = [source for source in audio_files if source.parent == path]
+    if len(direct_audio) > 1:
+        album_set: set[str] = set()
+        for source in sorted(direct_audio)[:30]:
+            album = _read_album_name(source)
+            if album:
+                album_set.add(album.casefold())
+        if len(album_set) >= 2:
+            return None
 
     # Try to get metadata from the directory name first, then first audio file
     dir_meta = parse_filename(path.name, cfg.filename_patterns)
@@ -574,11 +565,11 @@ def scan_collection(
     read_tags: bool = True,
     cache: ScanCache | None = None,
 ) -> CollectionScan:
-    """Scan an existing organized collection at *root* via a single-pass walk.
+    """Scan an organized collection at *root*.
 
     Returns a ``CollectionScan`` containing all discovered audiobooks plus
     filesystem metadata (empty dirs, flat files, cover-art presence) gathered
-    during the same walk — no extra I/O needed by the analyzer.
+    during the scan. The analyzer does not need extra directory reads.
 
     Set *read_tags* to ``False`` to skip reading audio-file tags (faster
     when author/title are already known from the directory structure).
@@ -594,7 +585,7 @@ def scan_collection(
     cache_context = _cache_context(cfg, mode="collection", read_tags=read_tags)
 
     # ------------------------------------------------------------------
-    # Single pass: os.scandir the tree up to 3 levels deep
+    # Collection paths have up to three structural levels.
     #   Level 0: root          → detect flat audio files
     #   Level 1: author dirs
     #   Level 2: title or series dirs
@@ -637,11 +628,13 @@ def scan_collection(
                 continue
 
             # Check whether this is a title dir (has audio) or a series dir
+            sub_path = Path(sub_entry.path)
             sub_info = _collect_dir_info(sub_entry.path, audio_exts)
 
-            if sub_info.audio_count > 0:
+            if _is_book_directory(
+                sub_path, [Path(source) for source, _size in sub_info.audio_files]
+            ):
                 # This is a title dir directly under author
-                sub_path = Path(sub_entry.path)
                 scan_result = cache.get(sub_path, context=cache_context) if cache else None
                 if scan_result is None:
                     scan_result = _build_scan_result(

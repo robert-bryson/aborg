@@ -10,6 +10,7 @@ import zipfile
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import BinaryIO
 
 from mutagen import File as MutagenFile
 from mutagen import MutagenError
@@ -100,11 +101,23 @@ KNOWN_SINGLE_NAME_AUTHORS: dict[str, str] = {
 }
 
 
+def _fold_accents(value: str) -> str:
+    """Remove Latin accent marks without deleting letters from other scripts."""
+    characters: list[str] = []
+    latin_base = False
+    for character in unicodedata.normalize("NFKD", value):
+        if unicodedata.combining(character):
+            if not latin_base:
+                characters.append(character)
+        else:
+            characters.append(character)
+            latin_base = unicodedata.name(character, "").startswith("LATIN ")
+    return unicodedata.normalize("NFC", "".join(characters))
+
+
 def _author_lookup_key(name: str) -> str:
     """Return a case- and accent-insensitive lookup key for an author alias."""
-    value = name.strip().casefold()
-    folded = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
-    return folded or value
+    return _fold_accents(name.strip().casefold())
 
 
 def resolve_single_name_author(name: str, extra: dict[str, str] | None = None) -> str:
@@ -280,6 +293,7 @@ _MAX_FOLDER_NAME = 180
 
 def _sanitize(name: str) -> str:
     """Remove or replace filesystem-unsafe characters."""
+    name = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", name)
     # Replace colons with dashes for readability
     # e.g. "Fascism: A Warning" → "Fascism - A Warning"
     name = re.sub(r":\s*", " - ", name)
@@ -289,11 +303,12 @@ def _sanitize(name: str) -> str:
     name = re.sub(r"\s{2,}", " ", name).strip()
     # Strip leading dots
     name = name.lstrip(".")
-    # Strip trailing dots/spaces, but preserve trailing initials (e.g. "Robert D.")
-    while name and name[-1] in ". ":
-        if name[-1] == "." and re.search(r"\b[A-Za-z]{1,2}\.$", name):
-            break
-        name = name[:-1]
+    name = name.rstrip(". ")
+    device_name = name.split(".", 1)[0].rstrip().upper()
+    if re.fullmatch(
+        r"CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[1-9\u00b9\u00b2\u00b3]", device_name
+    ):
+        name = f"_{name}"
     return name or "Unknown"
 
 
@@ -454,14 +469,14 @@ def parse_filename(name: str, patterns: list[str] | None = None) -> AudiobookMet
         m = re.match(pattern, name, re.IGNORECASE)
         if m:
             g = m.groupdict()
-            raw_title = g.get("title", "").strip() or "Unknown Title"
+            raw_title = (g.get("title") or "").strip() or "Unknown Title"
             narrator = (g.get("narrator") or "").strip() or None
             # Extract narrator from {braces} or [brackets] left in the title
             # when older/custom patterns don't have the narrator capture group.
             if not narrator:
                 narrator, raw_title = _extract_narrator(raw_title)
             return AudiobookMeta(
-                author=g.get("author", "").strip() or "Unknown Author",
+                author=(g.get("author") or "").strip() or "Unknown Author",
                 title=_NOISE_PAREN_RE.sub("", raw_title).strip() or raw_title,
                 series=(g.get("series") or "").strip() or None,
                 sequence=(g.get("sequence") or "").strip() or None,
@@ -988,6 +1003,7 @@ def merge_meta(*sources: AudiobookMeta) -> AudiobookMeta:
 # Conventional path for sidecar metadata JSON.
 METADATA_JSON_PATH = Path("metadata") / "metadata.json"
 _METADATA_JSON_ZIP_NAME = "metadata/metadata.json"
+_MAX_METADATA_BYTES = 1_048_576
 
 
 def _parse_metadata_dict(data: dict, source_path: Path | None = None) -> AudiobookMeta:
@@ -1018,6 +1034,16 @@ def _parse_metadata_dict(data: dict, source_path: Path | None = None) -> Audiobo
     return meta
 
 
+def _read_metadata_stream(stream: BinaryIO, source_path: Path) -> AudiobookMeta | None:
+    raw = stream.read(_MAX_METADATA_BYTES + 1)
+    if len(raw) > _MAX_METADATA_BYTES:
+        return None
+    data = json.loads(raw.decode("utf-8"))
+    if not isinstance(data, dict):
+        return None
+    return _parse_metadata_dict(data, source_path=source_path)
+
+
 def parse_metadata_json(dir_path: Path) -> AudiobookMeta | None:
     """Read ``metadata/metadata.json`` inside *dir_path* and return metadata.
 
@@ -1029,12 +1055,10 @@ def parse_metadata_json(dir_path: Path) -> AudiobookMeta | None:
     if not json_path.is_file():
         return None
     try:
-        data = json.loads(json_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        with json_path.open("rb") as stream:
+            return _read_metadata_stream(stream, dir_path)
+    except (OSError, ValueError, RecursionError):
         return None
-    if not isinstance(data, dict):
-        return None
-    return _parse_metadata_dict(data, source_path=dir_path)
 
 
 def parse_metadata_json_from_zip(zip_path: Path) -> AudiobookMeta | None:
@@ -1045,12 +1069,21 @@ def parse_metadata_json_from_zip(zip_path: Path) -> AudiobookMeta | None:
     try:
         with zipfile.ZipFile(zip_path) as zf:
             # Try both with and without a top-level directory wrapper.
-            for name in zf.namelist():
+            for member in zf.infolist():
+                name = member.filename
                 if name == _METADATA_JSON_ZIP_NAME or name.endswith("/" + _METADATA_JSON_ZIP_NAME):
-                    raw = zf.read(name)
-                    data = json.loads(raw.decode("utf-8"))
-                    if isinstance(data, dict):
-                        return _parse_metadata_dict(data, source_path=zip_path)
-    except (zipfile.BadZipFile, OSError, json.JSONDecodeError, UnicodeDecodeError, KeyError):
+                    if member.file_size > _MAX_METADATA_BYTES:
+                        return None
+                    with zf.open(member) as stream:
+                        return _read_metadata_stream(stream, zip_path)
+    except (
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+        OSError,
+        ValueError,
+        KeyError,
+        RuntimeError,
+        EOFError,
+    ):
         return None
     return None

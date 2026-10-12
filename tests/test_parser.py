@@ -5,6 +5,8 @@ import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from audiobook_organizer.config import Config
 from audiobook_organizer.parser import (
     _MAX_FOLDER_NAME,
@@ -61,7 +63,15 @@ class TestSanitize:
         assert _sanitize("title... ") == "title"
 
     def test_preserves_trailing_initial(self):
-        assert _sanitize("Putnam, Robert D.") == "Putnam, Robert D."
+        assert _sanitize("Putnam, Robert D.") == "Putnam, Robert D"
+
+    @pytest.mark.parametrize("name", ["CON", "nul.txt", "COM1", "LPT9", "AUX", "con .txt"])
+    def test_windows_device_names_get_a_safe_prefix(self, name):
+        assert _sanitize(name) == f"_{name}"
+
+    @pytest.mark.parametrize("control", ["\0", "\t", "\n", "\x1f", "\x7f", "\x9f"])
+    def test_control_characters_are_replaced(self, control):
+        assert _sanitize(f"Book{control}Title") == "Book Title"
 
     def test_returns_unknown_for_empty(self):
         assert _sanitize("") == "Unknown"
@@ -97,6 +107,9 @@ class TestParseFilename:
         assert meta.title == "Hackers"
         assert meta.year is None
         assert meta.narrator is None
+
+    def test_author_alias_does_not_erase_non_latin_letters(self):
+        assert resolve_single_name_author("作者1", {"別名1": "Wrong Author"}) == "作者1"
 
     def test_title_author_year(self):
         # Known ambiguity: "Title - Author (Year)" also matches pattern 2
@@ -151,6 +164,23 @@ class TestParseFilename:
     def test_strips_audiobook_paren_no_patterns(self):
         meta = parse_filename("Fear (Audiobook)")
         assert meta.title == "Fear"
+
+    @pytest.mark.parametrize(
+        ("name", "pattern", "author", "title"),
+        [
+            (
+                "Jane Austen",
+                r"(?P<author>.+?)(?: - (?P<title>.+))?$",
+                "Jane Austen",
+                "Unknown Title",
+            ),
+            ("Emma", r"(?:(?P<author>.+) - )?(?P<title>.+)$", "Unknown Author", "Emma"),
+        ],
+    )
+    def test_optional_metadata_groups(self, name, pattern, author, title):
+        meta = parse_filename(name, [pattern])
+        assert meta.author == author
+        assert meta.title == title
 
 
 # ── AudiobookMeta ────────────────────────────────────────────────────────
@@ -211,7 +241,8 @@ class TestAudiobookMeta:
     def test_dest_relative_preserves_author_initial(self):
         meta = AudiobookMeta(author="Robert D. Putnam", title="Bowling Alone")
         rel = meta.dest_relative(author_format="last_first")
-        assert "Putnam, Robert D." in str(rel)
+        assert rel.parts[0] == "Putnam, Robert D"
+        assert meta.author == "Robert D. Putnam"
 
     def test_dest_folder_colon_in_title(self):
         meta = AudiobookMeta(title="Sapiens: A Brief History of Humankind")
@@ -1583,6 +1614,43 @@ class TestParseMetadataJsonFromZip:
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("metadata/metadata.json", "not json")
         assert parse_metadata_json_from_zip(zip_path) is None
+
+    def test_encrypted_metadata_is_ignored(self, tmp_path):
+        source = _make_metadata_zip(tmp_path, {"title": "Book"})
+        with patch.object(zipfile.ZipFile, "open", side_effect=RuntimeError("password required")):
+            assert parse_metadata_json_from_zip(source) is None
+
+
+@pytest.mark.parametrize("storage", ["directory", "zip"])
+@pytest.mark.parametrize("extra_bytes", [0, 1])
+def test_sidecar_metadata_size_limit(tmp_path, storage, extra_bytes):
+    data = b"{}" + b" " * (1_048_576 - 2 + extra_bytes)
+    if storage == "directory":
+        directory = tmp_path / "metadata"
+        directory.mkdir()
+        (directory / "metadata.json").write_bytes(data)
+        metadata = parse_metadata_json(tmp_path)
+    else:
+        source = tmp_path / "book.zip"
+        with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("metadata/metadata.json", data)
+        metadata = parse_metadata_json_from_zip(source)
+    assert (metadata is None) is bool(extra_bytes)
+
+
+@pytest.mark.parametrize("storage", ["directory", "zip"])
+def test_deep_sidecar_json_is_ignored(tmp_path, storage):
+    data = "[" * 10_000 + "0" + "]" * 10_000
+    if storage == "directory":
+        directory = tmp_path / "metadata"
+        directory.mkdir()
+        (directory / "metadata.json").write_text(data, encoding="utf-8")
+        assert parse_metadata_json(tmp_path) is None
+    else:
+        source = tmp_path / "book.zip"
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr("metadata/metadata.json", data)
+        assert parse_metadata_json_from_zip(source) is None
 
 
 # ── _strip_embedded_year ─────────────────────────────────────────────────

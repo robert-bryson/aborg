@@ -1,5 +1,7 @@
 """Tests for audiobook_organizer.cli — CLI smoke tests."""
 
+import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,6 +31,37 @@ class TestCLI:
     def test_scan_help(self):
         result = CliRunner().invoke(cli, ["scan", "--help"])
         assert result.exit_code == 0
+
+    def test_parse_displays_literal_bracket_tags(self, tmp_cfg):
+        name = "Jane Austen - Emma [blue]"
+        result = CliRunner().invoke(cli, ["-c", tmp_cfg, "parse", name])
+        assert result.exit_code == 0, result.output
+        assert name in result.output
+
+    def test_analyze_displays_literal_metadata(self, tmp_cfg, tmp_path):
+        book = tmp_path / "library" / "Jane Austen" / "Emma"
+        metadata = book / "metadata"
+        metadata.mkdir(parents=True)
+        (book / "audio.mp3").write_bytes(b"audio")
+        (metadata / "metadata.json").write_text(
+            json.dumps({"title": "Emma [/bold]"}), encoding="utf-8"
+        )
+        result = CliRunner().invoke(
+            cli,
+            ["-c", tmp_cfg, "analyze", "--path", str(tmp_path / "library"), "--no-check-tags"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Emma [/bold]" in result.output
+
+    def test_rename_preview_displays_literal_directory_names(self, tmp_cfg, tmp_path):
+        book = tmp_path / "library" / "Jane Austen" / "Emma [blue]"
+        book.mkdir(parents=True)
+        (book / "audio.mp3").write_bytes(b"audio")
+        result = CliRunner().invoke(
+            cli, ["-c", tmp_cfg, "rename", "--path", str(tmp_path / "library"), "--dry-run"]
+        )
+        assert result.exit_code == 0, result.output
+        assert book.name in result.output
 
     def test_org_help(self):
         result = CliRunner().invoke(cli, ["org", "--help"])
@@ -311,6 +344,18 @@ class TestGetGitCommit:
         with patch("audiobook_organizer.cli.__file__", str(fake_file)):
             result = _get_git_commit()
         assert result is None
+
+    @pytest.mark.parametrize(("returncode", "stdout"), [(0, ""), (128, "fatal")])
+    def test_empty_or_failed_git_result_is_not_a_commit(self, tmp_path, returncode, stdout):
+        package = tmp_path / "src" / "audiobook_organizer"
+        package.mkdir(parents=True)
+        (tmp_path / ".git").mkdir()
+        result = subprocess.CompletedProcess(["git"], returncode, stdout=stdout)
+        with (
+            patch("audiobook_organizer.cli.__file__", str(package / "cli.py")),
+            patch("audiobook_organizer.cli.subprocess.run", return_value=result),
+        ):
+            assert _get_git_commit() is None
 
     def test_about_no_commit_row_when_git_unavailable(self):
         """About command should skip commit row when git info unavailable."""

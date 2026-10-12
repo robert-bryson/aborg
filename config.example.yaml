@@ -55,7 +55,8 @@ min_file_size: 1048576
 # The undo command reads this log file.
 move_log: ~/.aborg/moves.log
 
-# Map single-name aliases to full author names. Keys ignore letter case.
+# Map single-name aliases to full author names.
+# Keys ignore letter case and Latin accent marks. Other scripts stay unchanged.
 known_authors: {}
 
 # Libby tools require the optional libby package extra.

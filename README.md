@@ -90,6 +90,10 @@ The scanner accepts audio files, audio directories, and configured archive forma
 It can separate tagged albums in a shared directory.
 It skips files below `min_file_size`.
 It also skips archives below 50,000,000 bytes.
+Source comparisons ignore letter case and Latin accent marks.
+They keep letters from other scripts.
+Books with the same compared metadata can be omitted as duplicates.
+This comparison does not confirm equal file contents.
 
 ### Organize
 
@@ -142,6 +146,14 @@ ZIP extraction keeps the source archive by default.
 Set `delete_after_extract: true` to remove an archive after successful extraction.
 `--copy` keeps the source archive.
 Source cleanup is permanent; `aborg undo` cannot restore cleanup deletions.
+
+A file operation reserves its destination name before it writes data.
+If that name exists, the operation adds a timestamp.
+If the timestamp name also exists, the operation adds a counter.
+Existing files and destination links are not overwritten.
+Directory operations do not merge into an existing destination.
+A grouped audiobook can have a partial result if a track operation fails.
+Completed tracks stay in the undo log.
 
 ### Fetch
 
@@ -197,6 +209,10 @@ Both commands accept `--path` to select a collection and `--cache` to use stored
 They report failed corrections or name conflicts with a nonzero exit code.
 The organize undo log does not record these corrections.
 
+A series directory contains separate title directories.
+The scanner reports each title as one book.
+It keeps numbered disc or part directories together as one book.
+
 ### Undo
 
 ```sh
@@ -208,6 +224,9 @@ Undo processes the most recent recorded organize batch.
 It restores moved data and removes copied data from the destination.
 For extraction, it removes the extracted directory.
 If the source ZIP is missing, undo first rebuilds it from the extracted files.
+It stores empty directories in the rebuilt ZIP.
+It rejects links, Windows reparse points, and special files during this rebuild.
+If the rebuild fails, undo keeps the extracted data and its log entry.
 The rebuilt ZIP can have different compression and archive metadata.
 
 A conflicting source path prevents restoration of that move.
@@ -229,6 +248,8 @@ aborg tldr
 `parse` shows filename metadata and available audio tags.
 `about` shows the selected configuration path and a short Python version.
 `about --verbose` also shows the Python build and executable path.
+`about` shows a Git commit only for a source checkout of this project.
+Metadata and path values are displayed as literal text, not terminal markup.
 
 ## Configuration
 
@@ -275,6 +296,9 @@ For source scans, metadata has this priority:
 3. The configured filename patterns.
 
 Sidecar creator roles include `aut` for authors, `nrt` for narrators, and `trl` for translators.
+Sidecar JSON has a 1,048,576-byte limit for each file.
+The parser ignores oversized, unreadable, encrypted, or invalid sidecar data.
+It then uses the other metadata sources.
 The parser removes common placeholders and damaged punctuation from audio tags.
 It can also detect a series name and sequence number.
 
@@ -299,6 +323,9 @@ Audiobooks/
 ```
 
 The parser removes unsupported path characters and truncates long titles after 180 characters.
+It replaces control characters with spaces and removes final dots from directory names.
+It adds an underscore before a reserved Windows device name, such as `CON`.
+These changes do not change the stored author or title metadata.
 Different long titles can produce the same destination name.
 The organizer keeps a later source when an earlier operation creates that destination.
 
@@ -313,18 +340,31 @@ It checks undo log access before data changes and reverses an item if its log wr
 Keep the account settings directory private.
 Do not edit an undo log while a command is active.
 A process failure or power loss can interrupt an operation; keep a separate backup.
+Archive extraction does not yet enforce a total output-size limit.
+Extract only archives from a source that you trust.
+The sidecar JSON limit is not an archive extraction limit.
 
 ## Development
 
 ```sh
 uv sync
-uv run pytest --cov=audiobook_organizer --cov-report=term-missing
-uv run ruff check src tests
-uv run ruff format --check src tests
+uv run --locked pytest --cov=audiobook_organizer --cov-report=term-missing
+uv run --locked ruff check src tests
+uv run --locked ruff format --check src tests
 uv run pre-commit install
 ```
 
-CI checks Python 3.10 through 3.14.
+If pytest cannot use its default temporary directory, select a test-only directory:
+
+```sh
+uv run --locked pytest --basetemp=.pytest_cache/review
+```
+
+Pytest deletes that directory before each run.
+Do not select a directory that contains source code or collection data.
+
+CI checks Python 3.10 through 3.14 on Ubuntu 24.04.
+CI uses the committed lockfile and a separate uv cache for each job.
 Lint errors and format errors fail CI.
 Tests must meet the 80 percent combined statement and branch coverage requirement.
 The pre-commit Ruff version matches the lockfile.
@@ -333,6 +373,7 @@ See [TODO.md](TODO.md) for open engineering work.
 Write documentation with [ASD-STE100](https://www.asd-ste100.org/about_STE.html) principles.
 Use short sentences, active instructions, and one name for each technical concept.
 Use software identifiers as technical names.
+Keep the original license text unchanged.
 
 ## License
 
